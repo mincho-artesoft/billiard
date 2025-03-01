@@ -186,15 +186,29 @@ struct BilliardTable {
     var indices:  [UInt16] = []
     var modelMatrix = matrix_identity_float4x4
     
+    // Pocket info pulled out of buildRails so it can be accessed in buildCornerArc.
+    private let pocketRadius: Float = 0.06
+    private let pocketCenters: [SIMD2<Float>] = [
+        [-1, -2], [ 1, -2],  // top-left, top-right
+        [-1,  2], [ 1,  2],  // bottom-left, bottom-right
+        [-1,  0], [ 1,  0]   // side midpoints
+    ]
+    
     init() {
+        // 1) Build felt
         let (feltVerts, feltInds) = buildFeltSurface()
+        
+        // 2) Build rails (four straight boxes + four corner arcs)
         let (railVerts, railInds) = buildRails(startIndex: UInt16(feltVerts.count))
         
+        // Combine
         vertices = feltVerts + railVerts
         indices  = feltInds  + railInds
     }
 
+    //==================================================
     // MARK: - Felt (green) at y=0
+    //==================================================
     private func buildFeltSurface() -> ([Vertex], [UInt16]) {
         let p1: SIMD3<Float> = [-1, 0, -2]
         let p2: SIMD3<Float> = [ 1, 0, -2]
@@ -202,10 +216,10 @@ struct BilliardTable {
         let p4: SIMD3<Float> = [-1, 0,  2]
         
         let n: SIMD3<Float>  = [0, 1, 0]
-        let uv1: SIMD2<Float> = [0,0]
-        let uv2: SIMD2<Float> = [1,0]
-        let uv3: SIMD2<Float> = [1,1]
-        let uv4: SIMD2<Float> = [0,1]
+        let uv1: SIMD2<Float> = [0, 0]
+        let uv2: SIMD2<Float> = [1, 0]
+        let uv3: SIMD2<Float> = [1, 1]
+        let uv4: SIMD2<Float> = [0, 1]
         
         let verts = [
             Vertex(position: p1, normal: n, uv: uv1),
@@ -217,7 +231,9 @@ struct BilliardTable {
         return (verts, inds)
     }
 
-    // MARK: - Wood Rails with Pocket Holes
+    //==================================================
+    // MARK: - Build Rails (straight segments + corners)
+    //==================================================
     private func buildRails(startIndex: UInt16) -> ([Vertex], [UInt16]) {
         var railVertices: [Vertex] = []
         var railIndices:  [UInt16] = []
@@ -238,176 +254,12 @@ struct BilliardTable {
         let railInnerTopZ:   Float = -2.0
         let railOuterBotZ:   Float =  2.1
         let railInnerBotZ:   Float =  2.0
+
+        //--------------------------------
+        // 1) Four straight rail boxes
+        //--------------------------------
         
-        // Pocket positions and radius
-        let pocketRadius: Float = 0.06
-        let pocketCenters: [SIMD2<Float>] = [
-            [-1, -2], [1, -2], [-1, 2], [1, 2],  // Corners
-            [-1, 0], [1, 0]                      // Side midpoints
-        ]
-
-        // Helper to check if a point is inside any pocket
-        func isInPocket(x: Float, z: Float) -> Bool {
-            for center in pocketCenters {
-                let dx = x - center.x
-                let dz = z - center.y
-                let distance = sqrt(dx * dx + dz * dz)
-                if distance < pocketRadius {
-                    return true
-                }
-            }
-            return false
-        }
-
-        // Helper to build a rail box with pocket holes
-        func buildRailBox(minX: Float, maxX: Float,
-                          minZ: Float, maxZ: Float,
-                          yBottom: Float, yTop: Float) -> ([Vertex], [UInt16])
-        {
-            var verts: [Vertex] = []
-            var inds:  [UInt16] = []
-            var vertexMap: [SIMD3<Float>: UInt16] = [:]
-
-            // Define grid resolution for rail surface
-            let segmentsX = 20
-            let segmentsZ = Int((maxZ - minZ) / (maxX - minX) * Float(segmentsX))
-
-            // Generate vertices for top face only (since pockets are holes)
-            for i in 0...segmentsX {
-                let x = minX + (maxX - minX) * Float(i) / Float(segmentsX)
-                for j in 0...segmentsZ {
-                    let z = minZ + (maxZ - minZ) * Float(j) / Float(segmentsZ)
-                    let posBottom = SIMD3<Float>(x, yBottom, z)
-                    let posTop = SIMD3<Float>(x, yTop, z)
-
-                    // Normals for each face
-                    let nTop = SIMD3<Float>(0, 1, 0)
-                    let nBottom = SIMD3<Float>(0, -1, 0)
-                    let nLeft = SIMD3<Float>(-1, 0, 0)
-                    let nRight = SIMD3<Float>(1, 0, 0)
-                    let nFront = SIMD3<Float>(0, 0, -1)
-                    let nBack = SIMD3<Float>(0, 0, 1)
-                    let uv = SIMD2<Float>(x / (maxX - minX), z / (maxZ - minZ))
-
-                    // Add bottom face vertex
-                    if !isInPocket(x: x, z: z) {
-                        if vertexMap[posBottom] == nil {
-                            vertexMap[posBottom] = UInt16(verts.count)
-                            verts.append(Vertex(position: posBottom, normal: nBottom, uv: uv))
-                        }
-                    }
-
-                    // Add top face vertex (with pocket holes)
-                    if !isInPocket(x: x, z: z) {
-                        if vertexMap[posTop] == nil {
-                            vertexMap[posTop] = UInt16(verts.count)
-                            verts.append(Vertex(position: posTop, normal: nTop, uv: uv))
-                        }
-                    }
-                }
-            }
-
-            // Generate indices for top face with holes
-            for i in 0..<segmentsX {
-                for j in 0..<segmentsZ {
-                    let x0 = minX + (maxX - minX) * Float(i) / Float(segmentsX)
-                    let x1 = minX + (maxX - minX) * Float(i + 1) / Float(segmentsX)
-                    let z0 = minZ + (maxZ - minZ) * Float(j) / Float(segmentsZ)
-                    let z1 = minZ + (maxZ - minZ) * Float(j + 1) / Float(segmentsZ)
-
-                    let top0 = SIMD3<Float>(x0, yTop, z0)
-                    let top1 = SIMD3<Float>(x1, yTop, z0)
-                    let top2 = SIMD3<Float>(x1, yTop, z1)
-                    let top3 = SIMD3<Float>(x0, yTop, z1)
-
-                    let bot0 = SIMD3<Float>(x0, yBottom, z0)
-                    let bot1 = SIMD3<Float>(x1, yBottom, z0)
-                    let bot2 = SIMD3<Float>(x1, yBottom, z1)
-                    let bot3 = SIMD3<Float>(x0, yBottom, z1)
-
-                    // Check if quad is fully or partially inside a pocket
-                    let topCorners = [top0, top1, top2, top3]
-                    let botCorners = [bot0, bot1, bot2, bot3]
-                    let allTopInPocket = topCorners.allSatisfy { isInPocket(x: $0.x, z: $0.z) }
-                    let allBotInPocket = botCorners.allSatisfy { isInPocket(x: $0.x, z: $0.z) }
-
-                    if !allTopInPocket {
-                        if let i0 = vertexMap[top0], let i1 = vertexMap[top1], let i2 = vertexMap[top2], let i3 = vertexMap[top3] {
-                            inds.append(i0)
-                            inds.append(i1)
-                            inds.append(i2)
-                            inds.append(i0)
-                            inds.append(i2)
-                            inds.append(i3)
-                        }
-                    }
-
-                    if !allBotInPocket {
-                        if let i0 = vertexMap[bot0], let i1 = vertexMap[bot1], let i2 = vertexMap[bot2], let i3 = vertexMap[bot3] {
-                            inds.append(i0)
-                            inds.append(i2)
-                            inds.append(i1)
-                            inds.append(i0)
-                            inds.append(i3)
-                            inds.append(i2)
-                        }
-                    }
-
-                    // Side faces (front, back, left, right)
-                    if i == 0 {
-                        if let i0 = vertexMap[bot0], let i1 = vertexMap[top0], let i2 = vertexMap[top3], let i3 = vertexMap[bot3] {
-                            if !isInPocket(x: x0, z: z0) && !isInPocket(x: x0, z: z1) {
-                                inds.append(i0)
-                                inds.append(i1)
-                                inds.append(i2)
-                                inds.append(i0)
-                                inds.append(i2)
-                                inds.append(i3)
-                            }
-                        }
-                    }
-                    if i == segmentsX - 1 {
-                        if let i0 = vertexMap[bot1], let i1 = vertexMap[top1], let i2 = vertexMap[top2], let i3 = vertexMap[bot2] {
-                            if !isInPocket(x: x1, z: z0) && !isInPocket(x: x1, z: z1) {
-                                inds.append(i0)
-                                inds.append(i2)
-                                inds.append(i1)
-                                inds.append(i0)
-                                inds.append(i3)
-                                inds.append(i2)
-                            }
-                        }
-                    }
-                    if j == 0 {
-                        if let i0 = vertexMap[bot0], let i1 = vertexMap[top0], let i2 = vertexMap[top1], let i3 = vertexMap[bot1] {
-                            if !isInPocket(x: x0, z: z0) && !isInPocket(x: x1, z: z0) {
-                                inds.append(i0)
-                                inds.append(i1)
-                                inds.append(i2)
-                                inds.append(i0)
-                                inds.append(i2)
-                                inds.append(i3)
-                            }
-                        }
-                    }
-                    if j == segmentsZ - 1 {
-                        if let i0 = vertexMap[bot3], let i1 = vertexMap[top3], let i2 = vertexMap[top2], let i3 = vertexMap[bot2] {
-                            if !isInPocket(x: x0, z: z1) && !isInPocket(x: x1, z: z1) {
-                                inds.append(i0)
-                                inds.append(i2)
-                                inds.append(i1)
-                                inds.append(i0)
-                                inds.append(i3)
-                                inds.append(i2)
-                            }
-                        }
-                    }
-                }
-            }
-            return (verts, inds)
-        }
-
-        // LEFT RAIL: Continuous from -2.0 + cornerMarginZ to 2.0 - cornerMarginZ
+        // LEFT RAIL
         let left = buildRailBox(
             minX: railOuterLeftX, maxX: railInnerLeftX,
             minZ: -2.0 + cornerMarginZ, maxZ: 2.0 - cornerMarginZ,
@@ -417,7 +269,7 @@ struct BilliardTable {
         railIndices.append(contentsOf: left.1.map { $0 + current })
         current += UInt16(left.0.count)
 
-        // RIGHT RAIL: Continuous from -2.0 + cornerMarginZ to 2.0 - cornerMarginZ
+        // RIGHT RAIL
         let right = buildRailBox(
             minX: railInnerRightX, maxX: railOuterRightX,
             minZ: -2.0 + cornerMarginZ, maxZ: 2.0 - cornerMarginZ,
@@ -427,7 +279,7 @@ struct BilliardTable {
         railIndices.append(contentsOf: right.1.map { $0 + current })
         current += UInt16(right.0.count)
 
-        // TOP RAIL: Continuous from -1.0 + cornerMarginX to 1.0 - cornerMarginX
+        // TOP RAIL
         let top = buildRailBox(
             minX: -1.0 + cornerMarginX, maxX: 1.0 - cornerMarginX,
             minZ: railOuterTopZ, maxZ: railInnerTopZ,
@@ -437,7 +289,7 @@ struct BilliardTable {
         railIndices.append(contentsOf: top.1.map { $0 + current })
         current += UInt16(top.0.count)
 
-        // BOTTOM RAIL: Continuous from -1.0 + cornerMarginX to 1.0 - cornerMarginX
+        // BOTTOM RAIL
         let bottom = buildRailBox(
             minX: -1.0 + cornerMarginX, maxX: 1.0 - cornerMarginX,
             minZ: railInnerBotZ, maxZ: railOuterBotZ,
@@ -446,8 +298,337 @@ struct BilliardTable {
         railVertices.append(contentsOf: bottom.0)
         railIndices.append(contentsOf: bottom.1.map { $0 + current })
         current += UInt16(bottom.0.count)
+
+        //--------------------------------
+        // 2) Four corner arcs
+        //    We adjust start/end angles so
+        //    that each arc is on the OUTSIDE
+        //--------------------------------
+        
+        let segments = 12
+        
+        // TOP-LEFT CORNER => angles π..3π/2
+        let arcTL = buildCornerArc(
+            centerX: -1, centerZ: -2,
+            innerRadius: 0.0,
+            outerRadius: 0.1,
+            startAngle: Float.pi,           // 180° (left)
+            endAngle:   1.5 * Float.pi,     // 270° (up)
+            segments: segments,
+            yBottom: railMinY,
+            yTop: railMaxY
+        )
+        railVertices.append(contentsOf: arcTL.0)
+        railIndices.append(contentsOf: arcTL.1.map { $0 + current })
+        current += UInt16(arcTL.0.count)
+        
+        // TOP-RIGHT CORNER => angles 3π/2..2π
+        let arcTR = buildCornerArc(
+            centerX:  1, centerZ: -2,
+            innerRadius: 0.0,
+            outerRadius: 0.1,
+            startAngle: 1.5 * Float.pi,   // 270° (up)
+            endAngle:   2.0 * Float.pi,   // 360° (right)
+            segments: segments,
+            yBottom: railMinY,
+            yTop: railMaxY
+        )
+        railVertices.append(contentsOf: arcTR.0)
+        railIndices.append(contentsOf: arcTR.1.map { $0 + current })
+        current += UInt16(arcTR.0.count)
+        
+        // BOTTOM-RIGHT CORNER => angles 0..π/2
+        let arcBR = buildCornerArc(
+            centerX:  1, centerZ:  2,
+            innerRadius: 0.0,
+            outerRadius: 0.1,
+            startAngle: 0.0,           // 0° (right)
+            endAngle:   0.5 * Float.pi,// 90° (down)
+            segments: segments,
+            yBottom: railMinY,
+            yTop: railMaxY
+        )
+        railVertices.append(contentsOf: arcBR.0)
+        railIndices.append(contentsOf: arcBR.1.map { $0 + current })
+        current += UInt16(arcBR.0.count)
+        
+        // BOTTOM-LEFT CORNER => angles π/2..π
+        let arcBL = buildCornerArc(
+            centerX: -1, centerZ:  2,
+            innerRadius: 0.0,
+            outerRadius: 0.1,
+            startAngle: 0.5 * Float.pi,  // 90° (down)
+            endAngle:   Float.pi,        // 180° (left)
+            segments: segments,
+            yBottom: railMinY,
+            yTop: railMaxY
+        )
+        railVertices.append(contentsOf: arcBL.0)
+        railIndices.append(contentsOf: arcBL.1.map { $0 + current })
+        current += UInt16(arcBL.0.count)
         
         return (railVertices, railIndices)
+    }
+    
+    //==================================================
+    // MARK: - Helper: Build a rectangular rail box
+    //         with pockets subtracted
+    //==================================================
+    private func buildRailBox(minX: Float, maxX: Float,
+                              minZ: Float, maxZ: Float,
+                              yBottom: Float, yTop: Float) -> ([Vertex], [UInt16])
+    {
+        var verts: [Vertex] = []
+        var inds:  [UInt16] = []
+        var vertexMap: [SIMD3<Float>: UInt16] = [:]
+
+        // Define a small "grid" so we can skip pockets
+        let segmentsX = 20
+        let sizeX = (maxX - minX)
+        
+        // Estimate # of segments in Z for similar resolution:
+        let sizeZ = (maxZ - minZ)
+        let segmentsZ = max(1, Int(abs(sizeZ / sizeX) * Float(segmentsX)))
+
+        for i in 0...segmentsX {
+            let x = minX + sizeX * Float(i) / Float(segmentsX)
+            for j in 0...segmentsZ {
+                let z = minZ + sizeZ * Float(j) / Float(segmentsZ)
+                
+                let posBottom = SIMD3<Float>(x, yBottom, z)
+                let posTop    = SIMD3<Float>(x, yTop,    z)
+                
+                let nBottom: SIMD3<Float> = [ 0, -1, 0 ]
+                let nTop:    SIMD3<Float> = [ 0,  1, 0 ]
+                let uv = SIMD2<Float>(Float(i)/Float(segmentsX),
+                                      Float(j)/Float(segmentsZ))
+                
+                // Bottom face vertex
+                if !isInPocket(x: x, z: z) {
+                    if vertexMap[posBottom] == nil {
+                        let idx = UInt16(verts.count)
+                        vertexMap[posBottom] = idx
+                        verts.append(Vertex(position: posBottom, normal: nBottom, uv: uv))
+                    }
+                }
+                
+                // Top face vertex
+                if !isInPocket(x: x, z: z) {
+                    if vertexMap[posTop] == nil {
+                        let idx = UInt16(verts.count)
+                        vertexMap[posTop] = idx
+                        verts.append(Vertex(position: posTop, normal: nTop, uv: uv))
+                    }
+                }
+            }
+        }
+
+        // Build top & bottom faces
+        for i in 0..<segmentsX {
+            for j in 0..<segmentsZ {
+                
+                let x0 = minX + sizeX * Float(i)   / Float(segmentsX)
+                let x1 = minX + sizeX * Float(i+1) / Float(segmentsX)
+                let z0 = minZ + sizeZ * Float(j)   / Float(segmentsZ)
+                let z1 = minZ + sizeZ * Float(j+1) / Float(segmentsZ)
+                
+                let top0 = SIMD3<Float>(x0, yTop, z0)
+                let top1 = SIMD3<Float>(x1, yTop, z0)
+                let top2 = SIMD3<Float>(x1, yTop, z1)
+                let top3 = SIMD3<Float>(x0, yTop, z1)
+                
+                let bot0 = SIMD3<Float>(x0, yBottom, z0)
+                let bot1 = SIMD3<Float>(x1, yBottom, z0)
+                let bot2 = SIMD3<Float>(x1, yBottom, z1)
+                let bot3 = SIMD3<Float>(x0, yBottom, z1)
+                
+                // For top face
+                if let i0 = vertexMap[top0],
+                   let i1 = vertexMap[top1],
+                   let i2 = vertexMap[top2],
+                   let i3 = vertexMap[top3]
+                {
+                    inds.append(i0); inds.append(i1); inds.append(i2)
+                    inds.append(i0); inds.append(i2); inds.append(i3)
+                }
+                
+                // For bottom face
+                if let i0 = vertexMap[bot0],
+                   let i1 = vertexMap[bot1],
+                   let i2 = vertexMap[bot2],
+                   let i3 = vertexMap[bot3]
+                {
+                    // “Flip” winding for bottom so normal faces downward
+                    inds.append(i0); inds.append(i2); inds.append(i1)
+                    inds.append(i0); inds.append(i3); inds.append(i2)
+                }
+                
+                // For side faces, only if on boundary edges:
+                // left side
+                if i == 0 {
+                    if let i0 = vertexMap[bot0],
+                       let i1 = vertexMap[top0],
+                       let i2 = vertexMap[top3],
+                       let i3 = vertexMap[bot3]
+                    {
+                        inds.append(i0); inds.append(i1); inds.append(i2)
+                        inds.append(i0); inds.append(i2); inds.append(i3)
+                    }
+                }
+                // right side
+                if i == segmentsX - 1 {
+                    if let i0 = vertexMap[bot1],
+                       let i1 = vertexMap[top1],
+                       let i2 = vertexMap[top2],
+                       let i3 = vertexMap[bot2]
+                    {
+                        inds.append(i0); inds.append(i2); inds.append(i1)
+                        inds.append(i0); inds.append(i3); inds.append(i2)
+                    }
+                }
+                // front side
+                if j == 0 {
+                    if let i0 = vertexMap[bot0],
+                       let i1 = vertexMap[top0],
+                       let i2 = vertexMap[top1],
+                       let i3 = vertexMap[bot1]
+                    {
+                        inds.append(i0); inds.append(i1); inds.append(i2)
+                        inds.append(i0); inds.append(i2); inds.append(i3)
+                    }
+                }
+                // back side
+                if j == segmentsZ - 1 {
+                    if let i0 = vertexMap[bot3],
+                       let i1 = vertexMap[top3],
+                       let i2 = vertexMap[top2],
+                       let i3 = vertexMap[bot2]
+                    {
+                        inds.append(i0); inds.append(i2); inds.append(i1)
+                        inds.append(i0); inds.append(i3); inds.append(i2)
+                    }
+                }
+            }
+        }
+        
+        return (verts, inds)
+    }
+    
+    //==================================================
+    // MARK: - Corner Arc (quarter-ring) geometry
+    //==================================================
+    private func buildCornerArc(centerX: Float,
+                                centerZ: Float,
+                                innerRadius: Float,
+                                outerRadius: Float,
+                                startAngle: Float,
+                                endAngle: Float,
+                                segments: Int,
+                                yBottom: Float,
+                                yTop: Float) -> ([Vertex], [UInt16])
+    {
+        var verts: [Vertex] = []
+        var inds:  [UInt16] = []
+        
+        // Indices for ring vertices
+        var outerBottom: [UInt16?] = Array(repeating: nil, count: segments+1)
+        var outerTop:    [UInt16?] = Array(repeating: nil, count: segments+1)
+        var innerBottom: [UInt16?] = Array(repeating: nil, count: segments+1)
+        var innerTop:    [UInt16?] = Array(repeating: nil, count: segments+1)
+        
+        // Quick normal placeholders (top / bottom only)
+        let nTop:    SIMD3<Float> = [0,  1, 0]
+        let nBottom: SIMD3<Float> = [0, -1, 0]
+        let dummyUV: SIMD2<Float> = [0, 0]
+        
+        // Helper: add a vertex if not pocketed
+        func tryAddVertex(_ pos: SIMD3<Float>, _ norm: SIMD3<Float>) -> UInt16? {
+            if isInPocket(x: pos.x, z: pos.z) {
+                return nil
+            }
+            let idx = UInt16(verts.count)
+            verts.append(Vertex(position: pos, normal: norm, uv: dummyUV))
+            return idx
+        }
+        
+        // Build top/bottom rings
+        for i in 0...segments {
+            let t = Float(i) / Float(segments)
+            let angle = lerp(startAngle, endAngle, t)
+            
+            let ca = cos(angle)
+            let sa = sin(angle)
+            
+            // Outer ring XZ
+            let xOuter = centerX + outerRadius * ca
+            let zOuter = centerZ + outerRadius * sa
+            // Inner ring XZ
+            let xInner = centerX + innerRadius * ca
+            let zInner = centerZ + innerRadius * sa
+            
+            let posOB = SIMD3<Float>(xOuter, yBottom, zOuter)
+            let posOT = SIMD3<Float>(xOuter, yTop,    zOuter)
+            let posIB = SIMD3<Float>(xInner, yBottom, zInner)
+            let posIT = SIMD3<Float>(xInner, yTop,    zInner)
+            
+            outerBottom[i] = tryAddVertex(posOB, nBottom)
+            outerTop[i]    = tryAddVertex(posOT, nTop)
+            innerBottom[i] = tryAddVertex(posIB, nBottom)
+            innerTop[i]    = tryAddVertex(posIT, nTop)
+        }
+        
+        // Build index buffer for each ring slice: i..i+1
+        for i in 0..<segments {
+            let ob0 = outerBottom[i],   ob1 = outerBottom[i+1]
+            let ot0 = outerTop[i],      ot1 = outerTop[i+1]
+            let ib0 = innerBottom[i],   ib1 = innerBottom[i+1]
+            let it0 = innerTop[i],      it1 = innerTop[i+1]
+            
+            // Top face (outerTop => innerTop)
+            if let iot0 = ot0, let iit0 = it0, let iit1 = it1, let iot1 = ot1 {
+                inds.append(iot0); inds.append(iit0); inds.append(iit1)
+                inds.append(iot0); inds.append(iit1); inds.append(iot1)
+            }
+            // Bottom face (outerBottom => innerBottom)
+            if let iob0 = ob0, let iib0 = ib0, let iib1 = ib1, let iob1 = ob1 {
+                // Flip winding for bottom
+                inds.append(iob0); inds.append(iib1); inds.append(iib0)
+                inds.append(iob0); inds.append(iob1); inds.append(iib1)
+            }
+            
+            // Outer vertical wall
+            if let iob0 = ob0, let iot0 = ot0, let iot1 = ot1, let iob1 = ob1 {
+                inds.append(iob0); inds.append(iot0); inds.append(iot1)
+                inds.append(iob0); inds.append(iot1); inds.append(iob1)
+            }
+            // Inner vertical wall
+            if let iib0 = ib0, let iit0 = it0, let iit1 = it1, let iib1 = ib1 {
+                inds.append(iib0); inds.append(iit0); inds.append(iit1)
+                inds.append(iib0); inds.append(iit1); inds.append(iib1)
+            }
+        }
+        
+        return (verts, inds)
+    }
+
+    //==================================================
+    // MARK: - Pocket / Lerp Helpers
+    //==================================================
+    /// Simple linear interpolation: lerp(a,b,t)=a+(b-a)*t
+    private func lerp(_ a: Float, _ b: Float, _ t: Float) -> Float {
+        return a + (b - a) * t
+    }
+
+    /// Check if point (x,z) lies inside any pocket circle
+    private func isInPocket(x: Float, z: Float) -> Bool {
+        for c in pocketCenters {
+            let dx = x - c.x
+            let dz = z - c.y
+            if (dx*dx + dz*dz) < (pocketRadius * pocketRadius) {
+                return true
+            }
+        }
+        return false
     }
 }
 
