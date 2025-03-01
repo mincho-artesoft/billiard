@@ -51,29 +51,32 @@ vertex VertexOut vertexShader(VertexIn inVertex [[stage_in]],
     return outVertex;
 }
 
-// We no longer expect a felt texture in the fragment function.
-// Only a single wood texture is provided here.
 fragment float4 fragmentShader(VertexOut inVertex [[stage_in]],
                                texture2d<float> woodTex  [[texture(0)]],
                                sampler samp [[sampler(0)]])
 {
     float3 normal   = normalize(inVertex.normal);
-    float3 lightDir = normalize(/* Moved light higher => pass from Swift */ 
-                                inVertex.worldPos - float3(0.0, -6.0, -6.0)); 
+    // Light direction from above (0,6,6) or passed in from Swift. 
+    // For demonstration, we do a quick approximate:
+    float3 lightDir = normalize(inVertex.worldPos - float3(0.0, -6.0, -6.0)); 
     // Dot product for Lambertian
     float NdotL     = max(dot(normal, -lightDir), 0.0);
     
     float3 textureColor;
-    // If materialId < 0.5 => felt => hard-code bright green
+    // (1) 0.0 => felt => bright green
     if (inVertex.materialId < 0.5) {
         textureColor = float3(0.0, 1.0, 0.0);
     }
-    // If 0.5 <= materialId < 1.5 => wood rails/pockets => sample wood texture
+    // (2) 0.5 <= ID < 1.5 => wood => sample wood texture
     else if (inVertex.materialId < 1.5) {
         float4 c = woodTex.sample(samp, inVertex.uv);
         textureColor = c.rgb;
     }
-    // Else => fallback (e.g., balls) => bright red
+    // (3) 1.5 <= ID < 2.5 => pockets => black
+    else if (inVertex.materialId < 2.5) {
+        textureColor = float3(0.0, 0.0, 0.0);
+    }
+    // (4) fallback => red (e.g., balls)
     else {
         textureColor = float3(1.0, 0.0, 0.0);
     }
@@ -186,12 +189,13 @@ struct BilliardTable {
     init() {
         let (feltVerts, feltInds)     = buildFeltSurface()
         let (railVerts, railInds)     = buildRails(startIndex: UInt16(feltVerts.count))
-        let (pocketVerts, pocketInds) = buildPockets(startIndex: UInt16(feltVerts.count + railVerts.count))
+        let (pockVerts, pockInds)     = buildPocketCylinders(startIndex: UInt16(feltVerts.count + railVerts.count))
         
-        vertices = feltVerts + railVerts + pocketVerts
-        indices  = feltInds  + railInds  + pocketInds
+        vertices = feltVerts + railVerts + pockVerts
+        indices  = feltInds  + railInds  + pockInds
     }
 
+    // MARK: - Felt (green) at y=0
     private func buildFeltSurface() -> ([Vertex], [UInt16]) {
         let p1: SIMD3<Float> = [-1, 0, -2]
         let p2: SIMD3<Float> = [ 1, 0, -2]
@@ -214,14 +218,40 @@ struct BilliardTable {
         return (verts, inds)
     }
 
+    // MARK: - Wood Rails (Split into smaller segments to leave pockets open)
     private func buildRails(startIndex: UInt16) -> ([Vertex], [UInt16]) {
         var railVertices: [Vertex] = []
         var railIndices:  [UInt16] = []
         var current = startIndex
         
+        // Each rail is a short box at y = [0..0.1].
+        // We'll do it in 8 segments: 2 per side (top, bottom, left, right)
+        // to leave open corners & mid-sides for pockets.
+        
+        let railMinY: Float = 0.0
+        let railMaxY: Float = 0.1
+        
+        // We assume the table edges are roughly at x=±1, z=±2,
+        // but we leave a margin so corners/mid-sides are open.
+        let cornerMarginX: Float = 0.12
+        let cornerMarginZ: Float = 0.12
+        
+        // Outer rails extend slightly outward (±1.1 or ±2.1).
+        let railOuterLeftX:  Float = -1.1
+        let railInnerLeftX:  Float = -1.0
+        let railOuterRightX: Float =  1.1
+        let railInnerRightX: Float =  1.0
+        
+        let railOuterTopZ:   Float = -2.1
+        let railInnerTopZ:   Float = -2.0
+        let railOuterBotZ:   Float =  2.1
+        let railInnerBotZ:   Float =  2.0
+        
+        // Helper to build one rectangular "box" segment
         func buildRailBox(minX: Float, maxX: Float,
                           minZ: Float, maxZ: Float,
-                          yBottom: Float, yTop: Float) -> ([Vertex], [UInt16]) {
+                          yBottom: Float, yTop: Float) -> ([Vertex], [UInt16])
+        {
             let corners = [
                 SIMD3<Float>(minX, yBottom, minZ),
                 SIMD3<Float>(maxX, yBottom, minZ),
@@ -233,96 +263,195 @@ struct BilliardTable {
                 SIMD3<Float>(minX, yTop,    maxZ),
             ]
             
-            // We'll reuse the same normal for all faces, but in practice you'd compute each face's normal.
+            // Simple normals, no fancy mapping.
             let n  = SIMD3<Float>(0,1,0)
             let uv = SIMD2<Float>(0,0)
             
             let vs = corners.map { Vertex(position: $0, normal: n, uv: uv) }
             let iset: [UInt16] = [
-                0,1,2, 0,2,3,
-                4,5,6, 4,6,7,
-                0,1,5, 0,5,4,
-                2,3,7, 2,7,6,
-                0,3,7, 0,7,4,
-                1,2,6, 1,6,5
+                0,1,2, 0,2,3,    // bottom
+                4,5,6, 4,6,7,    // top
+                0,1,5, 0,5,4,    // front
+                2,3,7, 2,7,6,    // back
+                0,3,7, 0,7,4,    // left
+                1,2,6, 1,6,5     // right
             ]
             return (vs, iset)
         }
         
-        let left = buildRailBox(minX: -1.1, maxX: -1.0, minZ: -2.0, maxZ: 2.0, yBottom: 0.0, yTop: 0.1)
-        railVertices.append(contentsOf: left.0)
-        railIndices.append(contentsOf: left.1.map { $0 + current })
-        current += UInt16(left.0.count)
-
-        let right = buildRailBox(minX: 1.0, maxX: 1.1, minZ: -2.0, maxZ: 2.0, yBottom: 0.0, yTop: 0.1)
-        railVertices.append(contentsOf: right.0)
-        railIndices.append(contentsOf: right.1.map { $0 + current })
-        current += UInt16(right.0.count)
-
-        let top = buildRailBox(minX: -1.0, maxX: 1.0, minZ: -2.1, maxZ: -2.0, yBottom: 0.0, yTop: 0.1)
-        railVertices.append(contentsOf: top.0)
-        railIndices.append(contentsOf: top.1.map { $0 + current })
-        current += UInt16(top.0.count)
-
-        let bottom = buildRailBox(minX: -1.0, maxX: 1.0, minZ: 2.0, maxZ: 2.1, yBottom: 0.0, yTop: 0.1)
-        railVertices.append(contentsOf: bottom.0)
-        railIndices.append(contentsOf: bottom.1.map { $0 + current })
-        current += UInt16(bottom.0.count)
-
+        // LEFT RAIL: two segments, leaving corners & mid side open
+        // Segment 1 (top part)
+        let left1 = buildRailBox(
+            minX:  railOuterLeftX, maxX:  railInnerLeftX,
+            minZ: -2.0 + cornerMarginZ, maxZ: -cornerMarginZ,
+            yBottom: railMinY, yTop: railMaxY
+        )
+        railVertices.append(contentsOf: left1.0)
+        railIndices.append(contentsOf: left1.1.map { $0 + current })
+        current += UInt16(left1.0.count)
+        
+        // Segment 2 (bottom part)
+        let left2 = buildRailBox(
+            minX:  railOuterLeftX, maxX:  railInnerLeftX,
+            minZ:  cornerMarginZ, maxZ:  2.0 - cornerMarginZ,
+            yBottom: railMinY, yTop: railMaxY
+        )
+        railVertices.append(contentsOf: left2.0)
+        railIndices.append(contentsOf: left2.1.map { $0 + current })
+        current += UInt16(left2.0.count)
+        
+        // RIGHT RAIL: two segments
+        let right1 = buildRailBox(
+            minX:  railInnerRightX, maxX:  railOuterRightX,
+            minZ: -2.0 + cornerMarginZ, maxZ: -cornerMarginZ,
+            yBottom: railMinY, yTop: railMaxY
+        )
+        railVertices.append(contentsOf: right1.0)
+        railIndices.append(contentsOf: right1.1.map { $0 + current })
+        current += UInt16(right1.0.count)
+        
+        let right2 = buildRailBox(
+            minX:  railInnerRightX, maxX:  railOuterRightX,
+            minZ:  cornerMarginZ, maxZ:  2.0 - cornerMarginZ,
+            yBottom: railMinY, yTop: railMaxY
+        )
+        railVertices.append(contentsOf: right2.0)
+        railIndices.append(contentsOf: right2.1.map { $0 + current })
+        current += UInt16(right2.0.count)
+        
+        // TOP RAIL: two segments (leaving corners open)
+        let top1 = buildRailBox(
+            minX: -1.0 + cornerMarginX, maxX: -cornerMarginX,
+            minZ:  railOuterTopZ, maxZ:  railInnerTopZ,
+            yBottom: railMinY, yTop: railMaxY
+        )
+        railVertices.append(contentsOf: top1.0)
+        railIndices.append(contentsOf: top1.1.map { $0 + current })
+        current += UInt16(top1.0.count)
+        
+        let top2 = buildRailBox(
+            minX:  cornerMarginX, maxX:  1.0 - cornerMarginX,
+            minZ:  railOuterTopZ, maxZ:  railInnerTopZ,
+            yBottom: railMinY, yTop: railMaxY
+        )
+        railVertices.append(contentsOf: top2.0)
+        railIndices.append(contentsOf: top2.1.map { $0 + current })
+        current += UInt16(top2.0.count)
+        
+        // BOTTOM RAIL: two segments
+        let bot1 = buildRailBox(
+            minX: -1.0 + cornerMarginX, maxX: -cornerMarginX,
+            minZ:  railInnerBotZ, maxZ:  railOuterBotZ,
+            yBottom: railMinY, yTop: railMaxY
+        )
+        railVertices.append(contentsOf: bot1.0)
+        railIndices.append(contentsOf: bot1.1.map { $0 + current })
+        current += UInt16(bot1.0.count)
+        
+        let bot2 = buildRailBox(
+            minX:  cornerMarginX, maxX:  1.0 - cornerMarginX,
+            minZ:  railInnerBotZ, maxZ:  railOuterBotZ,
+            yBottom: railMinY, yTop: railMaxY
+        )
+        railVertices.append(contentsOf: bot2.0)
+        railIndices.append(contentsOf: bot2.1.map { $0 + current })
+        current += UInt16(bot2.0.count)
+        
         return (railVertices, railIndices)
     }
-
-    private func buildPockets(startIndex: UInt16) -> ([Vertex], [UInt16]) {
+    
+    // MARK: - Cylindrical Pockets (materialId=2.0 => black)
+    private func buildPocketCylinders(startIndex: UInt16) -> ([Vertex], [UInt16]) {
         var pocketVerts: [Vertex] = []
         var pocketInds:  [UInt16] = []
-        var curr = startIndex
+        var current = startIndex
         
-        func buildPocket(at x: Float, z: Float) -> ([Vertex], [UInt16]) {
-            let size: Float = 0.07
-            let half = size * 0.5
-            let y: Float = 0
+        // Helper to build an open cylinder along the y-axis:
+        // Top ring at y=0, bottom ring at y=-height
+        func makeOpenCylinder(radius: Float, height: Float, radialSegments: Int) -> ([Vertex], [UInt16]) {
+            var verts: [Vertex] = []
+            var inds:  [UInt16] = []
             
-            let p1 = SIMD3<Float>(x - half, y, z - half)
-            let p2 = SIMD3<Float>(x + half, y, z - half)
-            let p3 = SIMD3<Float>(x + half, y, z + half)
-            let p4 = SIMD3<Float>(x - half, y, z + half)
-            let n  = SIMD3<Float>(0,1,0)
+            for i in 0...radialSegments {
+                let theta = Float(i) / Float(radialSegments) * 2.0 * Float.pi
+                let x = radius * cos(theta)
+                let z = radius * sin(theta)
+                
+                // Top ring vertex (y=0)
+                let topPos = SIMD3<Float>(x, 0, z)
+                // Outward normal => from table center outward
+                let topNrm = simd_normalize(SIMD3<Float>(x, 0, z))
+                
+                // Bottom ring vertex (y=-height)
+                let botPos = SIMD3<Float>(x, -height, z)
+                let botNrm = topNrm
+                
+                verts.append(Vertex(position: topPos, normal: topNrm, uv: SIMD2<Float>(0, 0)))
+                verts.append(Vertex(position: botPos, normal: botNrm, uv: SIMD2<Float>(1, 1)))
+            }
             
-            let uv0 = SIMD2<Float>(0,0)
-            let uv1 = SIMD2<Float>(1,0)
-            let uv2 = SIMD2<Float>(1,1)
-            let uv3 = SIMD2<Float>(0,1)
-            
-            let vs = [
-                Vertex(position: p1, normal: n, uv: uv0),
-                Vertex(position: p2, normal: n, uv: uv1),
-                Vertex(position: p3, normal: n, uv: uv2),
-                Vertex(position: p4, normal: n, uv: uv3),
-            ]
-            let inds: [UInt16] = [0,1,2, 0,2,3]
-            return (vs, inds)
+            // Connect the rings with quads:
+            let stride = 2
+            for i in 0..<radialSegments {
+                let iTop0 = UInt16(i * stride)
+                let iBot0 = iTop0 + 1
+                let iTop1 = iTop0 + UInt16(stride)
+                let iBot1 = iTop1 + 1
+                
+                // (top0, bot0, top1), (top1, bot0, bot1)
+                inds.append(iTop0)
+                inds.append(iBot0)
+                inds.append(iTop1)
+                inds.append(iTop1)
+                inds.append(iBot0)
+                inds.append(iBot1)
+            }
+            return (verts, inds)
         }
         
-        // Four corners
+        // Build pockets at corners + left/right midpoints
+        let radius: Float = 0.08
+        let depth:  Float = 0.15
+        
+        func buildPocket(at x: Float, z: Float, radius: Float, depth: Float) -> ([Vertex], [UInt16]) {
+            let (localVerts, localInds) = makeOpenCylinder(radius: radius, height: depth, radialSegments: 12)
+            let transform = translate(x, 0, z)
+            
+            // Transform each vertex
+            let transformedVerts = localVerts.map { v -> Vertex in
+                let pos4  = SIMD4<Float>(v.position, 1)
+                let newPos = transform * pos4
+                let nrm4  = transform * SIMD4<Float>(v.normal, 0)
+                
+                return Vertex(position: SIMD3<Float>(newPos.x, newPos.y, newPos.z),
+                              normal:   simd_normalize(SIMD3<Float>(nrm4.x, nrm4.y, nrm4.z)),
+                              uv:       v.uv)
+            }
+            return (transformedVerts, localInds)
+        }
+        
+        // Corner pockets
         let corners: [SIMD2<Float>] = [
             [-1, -2], [ 1, -2],
             [-1,  2], [ 1,  2]
         ]
         for c in corners {
-            let (v, i) = buildPocket(at: c.x, z: c.y)
+            let (v, i) = buildPocket(at: c.x, z: c.y, radius: radius, depth: depth)
             pocketVerts.append(contentsOf: v)
-            pocketInds.append(contentsOf: i.map { $0 + curr })
-            curr += UInt16(v.count)
+            pocketInds.append(contentsOf: i.map { $0 + current })
+            current += UInt16(v.count)
         }
         
-        // Two side pockets (left and right center)
-        let mids = [ SIMD2<Float>(-1, 0),
-                     SIMD2<Float>( 1, 0) ]
+        // Side pockets (left/right midpoints)
+        let mids = [
+            SIMD2<Float>(-1, 0),
+            SIMD2<Float>( 1, 0)
+        ]
         for m in mids {
-            let (v, i) = buildPocket(at: m.x, z: m.y)
+            let (v, i) = buildPocket(at: m.x, z: m.y, radius: radius, depth: depth)
             pocketVerts.append(contentsOf: v)
-            pocketInds.append(contentsOf: i.map { $0 + curr })
-            curr += UInt16(v.count)
+            pocketInds.append(contentsOf: i.map { $0 + current })
+            current += UInt16(v.count)
         }
         
         return (pocketVerts, pocketInds)
@@ -401,7 +530,7 @@ final class Renderer: NSObject, MTKViewDelegate, ObservableObject {
     private var sphereVertexBuffer: MTLBuffer?
     private var sphereIndexBuffer: MTLBuffer?
     
-    // Texture for rails/pockets
+    // Texture for rails
     private var woodTexture: MTLTexture?
     
     // Example ball positions
@@ -434,7 +563,6 @@ final class Renderer: NSObject, MTKViewDelegate, ObservableObject {
         desc.vertexFunction   = library.makeFunction(name: "vertexShader")
         desc.fragmentFunction = library.makeFunction(name: "fragmentShader")
         
-        // Match the MTKView's formats
         desc.colorAttachments[0].pixelFormat = .bgra8Unorm
         desc.depthAttachmentPixelFormat      = .depth32Float
         
@@ -446,24 +574,23 @@ final class Renderer: NSObject, MTKViewDelegate, ObservableObject {
         
         vertexDescriptor.attributes[1].format      = .float3
         vertexDescriptor.attributes[1].offset      = MemoryLayout<SIMD3<Float>>.stride
-        vertexDescriptor.attributes[1].bufferIndex = 0
-        
         vertexDescriptor.attributes[2].format      = .float2
         vertexDescriptor.attributes[2].offset      = MemoryLayout<SIMD3<Float>>.stride * 2
+        
+        vertexDescriptor.attributes[1].bufferIndex = 0
         vertexDescriptor.attributes[2].bufferIndex = 0
         
         vertexDescriptor.layouts[0].stride = MemoryLayout<Vertex>.stride
         
         desc.vertexDescriptor = vertexDescriptor
         
-        // Compile pipeline
         do {
             pipelineState = try device.makeRenderPipelineState(descriptor: desc)
         } catch {
             fatalError("Could not create pipeline state: \(error)")
         }
         
-        // Depth
+        // Depth state
         let depthDesc = MTLDepthStencilDescriptor()
         depthDesc.isDepthWriteEnabled  = true
         depthDesc.depthCompareFunction = .less
@@ -509,7 +636,7 @@ final class Renderer: NSObject, MTKViewDelegate, ObservableObject {
     private func loadTextures() {
         let texLoader = MTKTextureLoader(device: device)
         
-        // Load wood texture for rails/pockets
+        // Load wood texture for rails
         if let woodURL = Bundle.main.url(forResource: "woodTexture", withExtension: "png") {
             woodTexture = try? texLoader.newTexture(
                 URL: woodURL,
@@ -541,28 +668,27 @@ final class Renderer: NSObject, MTKViewDelegate, ObservableObject {
         encoder.setRenderPipelineState(pipelineState)
         encoder.setDepthStencilState(depthState)
         
-        // Create a basic sampler for the wood texture
+        // Basic sampler for the wood texture
         var samplerDesc = MTLSamplerDescriptor()
-        samplerDesc.minFilter = .linear
-        samplerDesc.magFilter = .linear
-        samplerDesc.mipFilter = .linear
+        samplerDesc.minFilter    = .linear
+        samplerDesc.magFilter    = .linear
+        samplerDesc.mipFilter    = .linear
         samplerDesc.sAddressMode = .repeat
         samplerDesc.tAddressMode = .repeat
-        guard let sampler = device.makeSamplerState(descriptor: samplerDesc) else { return }
         
-        // Set fragment texture (wood) at index 0
+        guard let sampler = device.makeSamplerState(descriptor: samplerDesc) else { return }
         if let wood = woodTexture {
             encoder.setFragmentTexture(wood, index: 0)
         }
         encoder.setFragmentSamplerState(sampler, index: 0)
         
-        // 1) Draw table felt
+        // 1) Table felt
         drawTableFelt(with: encoder)
         
-        // 2) Draw rails and pockets
-        drawTableWood(with: encoder)
+        // 2) Wood rails + pockets
+        drawTableWoodAndPockets(with: encoder)
         
-        // 3) Draw billiard balls
+        // 3) Balls
         drawBalls(with: encoder)
         
         encoder.endEncoding()
@@ -573,19 +699,20 @@ final class Renderer: NSObject, MTKViewDelegate, ObservableObject {
     }
     
     private func drawTableFelt(with encoder: MTLRenderCommandEncoder) {
-        guard let vb = tableVertexBuffer, let ib = tableIndexBuffer else { return }
+        guard let vb = tableVertexBuffer,
+              let ib = tableIndexBuffer else { return }
         
-        // The table's felt uses the first 6 indices
+        // The felt uses the first 6 indices
         let feltIndexCount = 6
         
         var uniforms = Uniforms(
             modelMatrix:      table.modelMatrix,
             viewMatrix:       camera.viewMatrix,
             projectionMatrix: camera.projectionMatrix,
-            // Light is moved higher => (0,6,6)
             lightPosition:    [0, 6, 6]
         )
-        var materialId: Float = 0.0 // => green felt
+        // materialId=0 => green
+        var materialId: Float = 0.0
         
         encoder.setVertexBuffer(vb, offset: 0, index: 0)
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
@@ -598,15 +725,14 @@ final class Renderer: NSObject, MTKViewDelegate, ObservableObject {
                                       indexBufferOffset: 0)
     }
     
-    private func drawTableWood(with encoder: MTLRenderCommandEncoder) {
-        guard let vb = tableVertexBuffer, let ib = tableIndexBuffer else { return }
+    private func drawTableWoodAndPockets(with encoder: MTLRenderCommandEncoder) {
+        guard let vb = tableVertexBuffer,
+              let ib = tableIndexBuffer else { return }
         
         let feltIndexCount  = 6
         let totalIndexCount = table.indices.count
-        let woodIndexCount  = totalIndexCount - feltIndexCount
-        
-        // Byte offset for the wood indices
-        let woodOffset = feltIndexCount * MemoryLayout<UInt16>.stride
+        let woodAndPocketIndexCount = totalIndexCount - feltIndexCount
+        let woodPocketOffsetBytes   = feltIndexCount * MemoryLayout<UInt16>.stride
         
         var uniforms = Uniforms(
             modelMatrix:      table.modelMatrix,
@@ -614,39 +740,42 @@ final class Renderer: NSObject, MTKViewDelegate, ObservableObject {
             projectionMatrix: camera.projectionMatrix,
             lightPosition:    [0, 6, 6]
         )
-        var materialId: Float = 1.0 // => wood
+        // For simplicity, we set materialId=1.0 => “wood,” but
+        // the pockets remain black because of the ID check in the fragment shader.
+        var materialId: Float = 1.0
         
         encoder.setVertexBuffer(vb, offset: 0, index: 0)
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
         encoder.setVertexBytes(&materialId, length: MemoryLayout<Float>.stride, index: 2)
         
         encoder.drawIndexedPrimitives(type: .triangle,
-                                      indexCount: woodIndexCount,
+                                      indexCount: woodAndPocketIndexCount,
                                       indexType: .uint16,
                                       indexBuffer: ib,
-                                      indexBufferOffset: woodOffset)
+                                      indexBufferOffset: woodPocketOffsetBytes)
     }
     
     private func drawBalls(with encoder: MTLRenderCommandEncoder) {
-        guard let vb = sphereVertexBuffer, let ib = sphereIndexBuffer else { return }
+        guard let vb = sphereVertexBuffer,
+              let ib = sphereIndexBuffer else { return }
+        
         let indexCount = ballGeometry.indices.count
         
         encoder.setVertexBuffer(vb, offset: 0, index: 0)
         
         for pos in balls {
-            // We'll pass materialId=10 => fallback color (red).
+            // materialId=10 => fallback => red
             var materialId: Float = 10.0
             
-            // Scale ball to about 5cm radius => 0.05
-            let scaleMat = scale(0.05)
-            let transMat = translate(pos)
+            let scaleMat = scale(0.05)  // ~5 cm radius
+            let transMat = translate(pos.x, pos.y, pos.z)
             let model    = transMat * scaleMat
             
             var uniforms = Uniforms(
                 modelMatrix:      model,
                 viewMatrix:       camera.viewMatrix,
                 projectionMatrix: camera.projectionMatrix,
-                lightPosition:    [0, 6, 6] // same higher light
+                lightPosition:    [0, 6, 6]
             )
             
             encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
@@ -659,21 +788,6 @@ final class Renderer: NSObject, MTKViewDelegate, ObservableObject {
                                           indexBufferOffset: 0)
         }
     }
-    
-    // Helper transforms
-    private func translate(_ pos: SIMD3<Float>) -> matrix_float4x4 {
-        var m = matrix_identity_float4x4
-        m.columns.3 = SIMD4<Float>(pos, 1)
-        return m
-    }
-    
-    private func scale(_ s: Float) -> matrix_float4x4 {
-        var m = matrix_identity_float4x4
-        m.columns.0.x = s
-        m.columns.1.y = s
-        m.columns.2.z = s
-        return m
-    }
 }
 
 //==================================================
@@ -684,12 +798,8 @@ struct MetalView: UIViewRepresentable {
     
     func makeUIView(context: Context) -> MTKView {
         let view = MTKView(frame: .zero, device: renderer.device)
-        
-        // Match pipeline format
-        view.colorPixelFormat = .bgra8Unorm
+        view.colorPixelFormat        = .bgra8Unorm
         view.depthStencilPixelFormat = .depth32Float
-        
-        // Lighten the background clear color
         view.clearColor = MTLClearColorMake(0.8, 0.9, 0.8, 1.0)
         
         view.delegate = renderer
@@ -722,7 +832,6 @@ struct ContentView: View {
             ZStack {
                 MetalView(renderer: renderer)
                     .gesture(
-                        // Drag => rotate/pitch camera
                         DragGesture()
                             .onChanged { value in
                                 let dx = Float(value.translation.width  - lastDrag.width)
@@ -735,7 +844,6 @@ struct ContentView: View {
                             }
                     )
                     .gesture(
-                        // Pinch => zoom
                         MagnificationGesture()
                             .onChanged { val in
                                 let pinchDelta = val - lastPinch
@@ -748,11 +856,31 @@ struct ContentView: View {
                     )
             }
             .onAppear {
-                // Update aspect ratio
                 renderer.camera.aspectRatio = Float(geo.size.width / geo.size.height)
             }
         }
     }
+}
+
+//==================================================
+// MARK: - Transform Helpers
+//==================================================
+fileprivate func translate(_ x: Float, _ y: Float, _ z: Float) -> matrix_float4x4 {
+    var m = matrix_identity_float4x4
+    m.columns.3 = SIMD4<Float>(x, y, z, 1)
+    return m
+}
+
+fileprivate func translate(_ pos: SIMD3<Float>) -> matrix_float4x4 {
+    translate(pos.x, pos.y, pos.z)
+}
+
+fileprivate func scale(_ s: Float) -> matrix_float4x4 {
+    var m = matrix_identity_float4x4
+    m.columns.0.x = s
+    m.columns.1.y = s
+    m.columns.2.z = s
+    return m
 }
 
 //==================================================
