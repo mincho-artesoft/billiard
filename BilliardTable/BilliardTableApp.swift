@@ -224,19 +224,12 @@ struct BilliardTable {
         var railIndices:  [UInt16] = []
         var current = startIndex
         
-        // Each rail is a short box at y = [0..0.1].
-        // We'll do it in 8 segments: 2 per side (top, bottom, left, right)
-        // to leave open corners & mid-sides for pockets.
-        
         let railMinY: Float = 0.0
         let railMaxY: Float = 0.1
         
-        // We assume the table edges are roughly at x=±1, z=±2,
-        // but we leave a margin so corners/mid-sides are open.
-        let cornerMarginX: Float = 0.12
-        let cornerMarginZ: Float = 0.12
+        let cornerMarginX: Float = 0.06  // Reduced from 0.12 as per your previous request
+        let cornerMarginZ: Float = 0.06  // Reduced from 0.12 as per your previous request
         
-        // Outer rails extend slightly outward (±1.1 or ±2.1).
         let railOuterLeftX:  Float = -1.1
         let railInnerLeftX:  Float = -1.0
         let railOuterRightX: Float =  1.1
@@ -263,7 +256,6 @@ struct BilliardTable {
                 SIMD3<Float>(minX, yTop,    maxZ),
             ]
             
-            // Simple normals, no fancy mapping.
             let n  = SIMD3<Float>(0,1,0)
             let uv = SIMD2<Float>(0,0)
             
@@ -280,7 +272,6 @@ struct BilliardTable {
         }
         
         // LEFT RAIL: two segments, leaving corners & mid side open
-        // Segment 1 (top part)
         let left1 = buildRailBox(
             minX:  railOuterLeftX, maxX:  railInnerLeftX,
             minZ: -2.0 + cornerMarginZ, maxZ: -cornerMarginZ,
@@ -290,7 +281,6 @@ struct BilliardTable {
         railIndices.append(contentsOf: left1.1.map { $0 + current })
         current += UInt16(left1.0.count)
         
-        // Segment 2 (bottom part)
         let left2 = buildRailBox(
             minX:  railOuterLeftX, maxX:  railInnerLeftX,
             minZ:  cornerMarginZ, maxZ:  2.0 - cornerMarginZ,
@@ -319,52 +309,35 @@ struct BilliardTable {
         railIndices.append(contentsOf: right2.1.map { $0 + current })
         current += UInt16(right2.0.count)
         
-        // TOP RAIL: two segments (leaving corners open)
-        let top1 = buildRailBox(
-            minX: -1.0 + cornerMarginX, maxX: -cornerMarginX,
+        // TOP RAIL: single continuous segment (merged top1 and top2)
+        let top = buildRailBox(
+            minX: -1.0 + cornerMarginX, maxX: 1.0 - cornerMarginX,  // Full length without middle gap
             minZ:  railOuterTopZ, maxZ:  railInnerTopZ,
             yBottom: railMinY, yTop: railMaxY
         )
-        railVertices.append(contentsOf: top1.0)
-        railIndices.append(contentsOf: top1.1.map { $0 + current })
-        current += UInt16(top1.0.count)
+        railVertices.append(contentsOf: top.0)
+        railIndices.append(contentsOf: top.1.map { $0 + current })
+        current += UInt16(top.0.count)
         
-        let top2 = buildRailBox(
-            minX:  cornerMarginX, maxX:  1.0 - cornerMarginX,
-            minZ:  railOuterTopZ, maxZ:  railInnerTopZ,
-            yBottom: railMinY, yTop: railMaxY
-        )
-        railVertices.append(contentsOf: top2.0)
-        railIndices.append(contentsOf: top2.1.map { $0 + current })
-        current += UInt16(top2.0.count)
-        
-        // BOTTOM RAIL: two segments
-        let bot1 = buildRailBox(
-            minX: -1.0 + cornerMarginX, maxX: -cornerMarginX,
+        // BOTTOM RAIL: single continuous segment (merged bot1 and bot2)
+        let bottom = buildRailBox(
+            minX: -1.0 + cornerMarginX, maxX: 1.0 - cornerMarginX,  // Full length without middle gap
             minZ:  railInnerBotZ, maxZ:  railOuterBotZ,
             yBottom: railMinY, yTop: railMaxY
         )
-        railVertices.append(contentsOf: bot1.0)
-        railIndices.append(contentsOf: bot1.1.map { $0 + current })
-        current += UInt16(bot1.0.count)
-        
-        let bot2 = buildRailBox(
-            minX:  cornerMarginX, maxX:  1.0 - cornerMarginX,
-            minZ:  railInnerBotZ, maxZ:  railOuterBotZ,
-            yBottom: railMinY, yTop: railMaxY
-        )
-        railVertices.append(contentsOf: bot2.0)
-        railIndices.append(contentsOf: bot2.1.map { $0 + current })
-        current += UInt16(bot2.0.count)
+        railVertices.append(contentsOf: bottom.0)
+        railIndices.append(contentsOf: bottom.1.map { $0 + current })
+        current += UInt16(bottom.0.count)
         
         return (railVertices, railIndices)
     }
-    
     // MARK: - Cylindrical Pockets (materialId=2.0 => black)
     private func buildPocketCylinders(startIndex: UInt16) -> ([Vertex], [UInt16]) {
         var pocketVerts: [Vertex] = []
         var pocketInds:  [UInt16] = []
         var current = startIndex
+        
+        
         
         // Helper to build an open cylinder along the y-axis:
         // Top ring at y=0, bottom ring at y=-height
@@ -410,7 +383,7 @@ struct BilliardTable {
         }
         
         // Build pockets at corners + left/right midpoints
-        let radius: Float = 0.08
+        let radius: Float = 0.06  // Reduced from 0.08
         let depth:  Float = 0.15
         
         func buildPocket(at x: Float, z: Float, radius: Float, depth: Float) -> ([Vertex], [UInt16]) {
