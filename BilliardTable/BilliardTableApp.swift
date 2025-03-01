@@ -51,38 +51,36 @@ vertex VertexOut vertexShader(VertexIn inVertex [[stage_in]],
     return outVertex;
 }
 
+// We no longer expect a felt texture in the fragment function.
+// Only a single wood texture is provided here.
 fragment float4 fragmentShader(VertexOut inVertex [[stage_in]],
-                               // We'll have 2 textures: felt & wood
-                               texture2d<float> feltTex  [[texture(0)]],
-                               texture2d<float> woodTex  [[texture(1)]],
-                               sampler                samp [[sampler(0)]])
+                               texture2d<float> woodTex  [[texture(0)]],
+                               sampler samp [[sampler(0)]])
 {
-    // Simple Lambertian lighting
-    float3 normal = normalize(inVertex.normal);
-    float3 lightPos = float3(0.0, 2.0, 2.0);
-    float3 lightDir = normalize(lightPos - inVertex.worldPos);
-    float NdotL     = max(dot(normal, lightDir), 0.0);
+    float3 normal   = normalize(inVertex.normal);
+    float3 lightDir = normalize(/* Moved light higher => pass from Swift */ 
+                                inVertex.worldPos - float3(0.0, -6.0, -6.0)); 
+    // Dot product for Lambertian
+    float NdotL     = max(dot(normal, -lightDir), 0.0);
     
-    // We'll pick which texture to sample from materialId:
-    float2 uv = inVertex.uv;
     float3 textureColor;
+    // If materialId < 0.5 => felt => hard-code bright green
     if (inVertex.materialId < 0.5) {
-        // Felt
-        float4 c = feltTex.sample(samp, uv);
+        textureColor = float3(0.0, 1.0, 0.0);
+    }
+    // If 0.5 <= materialId < 1.5 => wood rails/pockets => sample wood texture
+    else if (inVertex.materialId < 1.5) {
+        float4 c = woodTex.sample(samp, inVertex.uv);
         textureColor = c.rgb;
-    } else if (inVertex.materialId < 1.5) {
-        // Wood
-        float4 c = woodTex.sample(samp, uv);
-        textureColor = c.rgb;
-    } else {
-        // Some non-textured fallback (just color).
-        // Let’s pick a bright color, e.g. red:
+    }
+    // Else => fallback (e.g., balls) => bright red
+    else {
         textureColor = float3(1.0, 0.0, 0.0);
     }
     
-    // Basic ambient + diffuse
-    float3 ambient = 0.2 * textureColor;
-    float3 diffuse = 0.8 * textureColor * NdotL;
+    // Increase ambient and keep a diffuse term
+    float3 ambient = 0.4 * textureColor;
+    float3 diffuse = 0.6 * textureColor * NdotL;
     float3 final   = ambient + diffuse;
     
     return float4(final, 1.0);
@@ -117,11 +115,11 @@ struct Camera {
     
     var aspectRatio: Float = 1
     var fov:         Float = 60 * (.pi / 180)
-
+    
     mutating func updateCameraDrag(deltaX: Float, deltaY: Float) {
         rotation += deltaX * 0.01
         pitch    -= deltaY * 0.01
-        // clamp pitch so we don't flip under the table
+        // clamp pitch
         let maxPitch: Float = .pi * 0.49
         pitch = max(-maxPitch, min(maxPitch, pitch))
     }
@@ -139,7 +137,7 @@ struct Camera {
     }
 
     var projectionMatrix: matrix_float4x4 {
-        return perspectiveFov(fovy: fov, aspect: aspectRatio, nearZ: 0.01, farZ: 100)
+        perspectiveFov(fovy: fov, aspect: aspectRatio, nearZ: 0.01, farZ: 100)
     }
     
     // MARK: - Helpers
@@ -186,11 +184,8 @@ struct BilliardTable {
     var modelMatrix = matrix_identity_float4x4
     
     init() {
-        // We'll build:
-        // 1) The main playing surface (felt).
-        // 2) The rails & pockets (wood).
-        let (feltVerts, feltInds)    = buildFeltSurface()
-        let (railVerts, railInds)    = buildRails(startIndex: UInt16(feltVerts.count))
+        let (feltVerts, feltInds)     = buildFeltSurface()
+        let (railVerts, railInds)     = buildRails(startIndex: UInt16(feltVerts.count))
         let (pocketVerts, pocketInds) = buildPockets(startIndex: UInt16(feltVerts.count + railVerts.count))
         
         vertices = feltVerts + railVerts + pocketVerts
@@ -198,23 +193,22 @@ struct BilliardTable {
     }
 
     private func buildFeltSurface() -> ([Vertex], [UInt16]) {
-        // Table top
         let p1: SIMD3<Float> = [-1, 0, -2]
         let p2: SIMD3<Float> = [ 1, 0, -2]
         let p3: SIMD3<Float> = [ 1, 0,  2]
         let p4: SIMD3<Float> = [-1, 0,  2]
         
         let n: SIMD3<Float>  = [0, 1, 0]
-        let v1: SIMD2<Float> = [0,0]
-        let v2: SIMD2<Float> = [1,0]
-        let v3: SIMD2<Float> = [1,1]
-        let v4: SIMD2<Float> = [0,1]
+        let uv1: SIMD2<Float> = [0,0]
+        let uv2: SIMD2<Float> = [1,0]
+        let uv3: SIMD2<Float> = [1,1]
+        let uv4: SIMD2<Float> = [0,1]
         
         let verts = [
-            Vertex(position: p1, normal: n, uv: v1),
-            Vertex(position: p2, normal: n, uv: v2),
-            Vertex(position: p3, normal: n, uv: v3),
-            Vertex(position: p4, normal: n, uv: v4),
+            Vertex(position: p1, normal: n, uv: uv1),
+            Vertex(position: p2, normal: n, uv: uv2),
+            Vertex(position: p3, normal: n, uv: uv3),
+            Vertex(position: p4, normal: n, uv: uv4),
         ]
         let inds: [UInt16] = [0,1,2, 0,2,3]
         return (verts, inds)
@@ -239,7 +233,7 @@ struct BilliardTable {
                 SIMD3<Float>(minX, yTop,    maxZ),
             ]
             
-            // Simplify normals to up
+            // We'll reuse the same normal for all faces, but in practice you'd compute each face's normal.
             let n  = SIMD3<Float>(0,1,0)
             let uv = SIMD2<Float>(0,0)
             
@@ -309,6 +303,7 @@ struct BilliardTable {
             return (vs, inds)
         }
         
+        // Four corners
         let corners: [SIMD2<Float>] = [
             [-1, -2], [ 1, -2],
             [-1,  2], [ 1,  2]
@@ -320,7 +315,7 @@ struct BilliardTable {
             curr += UInt16(v.count)
         }
         
-        // sides
+        // Two side pockets (left and right center)
         let mids = [ SIMD2<Float>(-1, 0),
                      SIMD2<Float>( 1, 0) ]
         for m in mids {
@@ -404,10 +399,9 @@ final class Renderer: NSObject, MTKViewDelegate, ObservableObject {
     
     // Buffers for sphere geometry
     private var sphereVertexBuffer: MTLBuffer?
-    private var sphereIndexBuffer:  MTLBuffer?
+    private var sphereIndexBuffer: MTLBuffer?
     
-    // 2 textures: felt & wood
-    private var feltTexture: MTLTexture?
+    // Texture for rails/pockets
     private var woodTexture: MTLTexture?
     
     // Example ball positions
@@ -418,7 +412,7 @@ final class Renderer: NSObject, MTKViewDelegate, ObservableObject {
     
     init(metalKitView: MTKView) {
         guard let dev = MTLCreateSystemDefaultDevice() else {
-            fatalError("Metal not supported.")
+            fatalError("Metal not supported on this device.")
         }
         device = dev
         
@@ -427,7 +421,7 @@ final class Renderer: NSObject, MTKViewDelegate, ObservableObject {
         }
         commandQueue = queue
         
-        // Build library
+        // Build library from embedded shader source
         let library: MTLLibrary
         do {
             library = try device.makeLibrary(source: metalShaderSource, options: nil)
@@ -435,27 +429,34 @@ final class Renderer: NSObject, MTKViewDelegate, ObservableObject {
             fatalError("Could not create library: \(error)")
         }
         
-        // Pipeline
+        // Create pipeline
         let desc = MTLRenderPipelineDescriptor()
         desc.vertexFunction   = library.makeFunction(name: "vertexShader")
         desc.fragmentFunction = library.makeFunction(name: "fragmentShader")
-        desc.colorAttachments[0].pixelFormat = metalKitView.colorPixelFormat
+        
+        // Match the MTKView's formats
+        desc.colorAttachments[0].pixelFormat = .bgra8Unorm
         desc.depthAttachmentPixelFormat      = .depth32Float
         
+        // Vertex descriptor
         let vertexDescriptor = MTLVertexDescriptor()
         vertexDescriptor.attributes[0].format      = .float3
         vertexDescriptor.attributes[0].offset      = 0
         vertexDescriptor.attributes[0].bufferIndex = 0
+        
         vertexDescriptor.attributes[1].format      = .float3
         vertexDescriptor.attributes[1].offset      = MemoryLayout<SIMD3<Float>>.stride
         vertexDescriptor.attributes[1].bufferIndex = 0
+        
         vertexDescriptor.attributes[2].format      = .float2
         vertexDescriptor.attributes[2].offset      = MemoryLayout<SIMD3<Float>>.stride * 2
         vertexDescriptor.attributes[2].bufferIndex = 0
+        
         vertexDescriptor.layouts[0].stride = MemoryLayout<Vertex>.stride
         
         desc.vertexDescriptor = vertexDescriptor
         
+        // Compile pipeline
         do {
             pipelineState = try device.makeRenderPipelineState(descriptor: desc)
         } catch {
@@ -473,45 +474,47 @@ final class Renderer: NSObject, MTKViewDelegate, ObservableObject {
         
         super.init()
         
-        // Setup geometry & textures
+        // Setup geometry & texture
         setupTableBuffers()
         setupSphereBuffers()
         loadTextures()
     }
     
     private func setupTableBuffers() {
-        tableVertexBuffer = device.makeBuffer(bytes: table.vertices,
-                                              length: table.vertices.count * MemoryLayout<Vertex>.stride,
-                                              options: [])
-        tableIndexBuffer  = device.makeBuffer(bytes: table.indices,
-                                              length: table.indices.count * MemoryLayout<UInt16>.stride,
-                                              options: [])
+        tableVertexBuffer = device.makeBuffer(
+            bytes: table.vertices,
+            length: table.vertices.count * MemoryLayout<Vertex>.stride,
+            options: []
+        )
+        tableIndexBuffer  = device.makeBuffer(
+            bytes: table.indices,
+            length: table.indices.count * MemoryLayout<UInt16>.stride,
+            options: []
+        )
     }
     
     private func setupSphereBuffers() {
-        sphereVertexBuffer = device.makeBuffer(bytes: ballGeometry.vertices,
-                                               length: ballGeometry.vertices.count * MemoryLayout<Vertex>.stride,
-                                               options: [])
-        sphereIndexBuffer  = device.makeBuffer(bytes: ballGeometry.indices,
-                                               length: ballGeometry.indices.count * MemoryLayout<UInt16>.stride,
-                                               options: [])
+        sphereVertexBuffer = device.makeBuffer(
+            bytes: ballGeometry.vertices,
+            length: ballGeometry.vertices.count * MemoryLayout<Vertex>.stride,
+            options: []
+        )
+        sphereIndexBuffer  = device.makeBuffer(
+            bytes: ballGeometry.indices,
+            length: ballGeometry.indices.count * MemoryLayout<UInt16>.stride,
+            options: []
+        )
     }
     
     private func loadTextures() {
         let texLoader = MTKTextureLoader(device: device)
         
-        // feltTexture.png must exist in your bundle
-        if let feltURL = Bundle.main.url(forResource: "feltTexture", withExtension: "png") {
-            feltTexture = try? texLoader.newTexture(URL: feltURL, options: [
-                MTKTextureLoader.Option.SRGB : false
-            ])
-        }
-        
-        // woodTexture.png must exist in your bundle
+        // Load wood texture for rails/pockets
         if let woodURL = Bundle.main.url(forResource: "woodTexture", withExtension: "png") {
-            woodTexture = try? texLoader.newTexture(URL: woodURL, options: [
-                MTKTextureLoader.Option.SRGB : false
-            ])
+            woodTexture = try? texLoader.newTexture(
+                URL: woodURL,
+                options: [ MTKTextureLoader.Option.SRGB : false ]
+            )
         }
     }
     
@@ -538,31 +541,28 @@ final class Renderer: NSObject, MTKViewDelegate, ObservableObject {
         encoder.setRenderPipelineState(pipelineState)
         encoder.setDepthStencilState(depthState)
         
-        // Sampler
+        // Create a basic sampler for the wood texture
         var samplerDesc = MTLSamplerDescriptor()
         samplerDesc.minFilter = .linear
         samplerDesc.magFilter = .linear
         samplerDesc.mipFilter = .linear
         samplerDesc.sAddressMode = .repeat
         samplerDesc.tAddressMode = .repeat
-        let sampler = device.makeSamplerState(descriptor: samplerDesc)!
+        guard let sampler = device.makeSamplerState(descriptor: samplerDesc) else { return }
         
-        // Set fragment textures
-        if let felt = feltTexture {
-            encoder.setFragmentTexture(felt, index: 0)
-        }
+        // Set fragment texture (wood) at index 0
         if let wood = woodTexture {
-            encoder.setFragmentTexture(wood, index: 1)
+            encoder.setFragmentTexture(wood, index: 0)
         }
         encoder.setFragmentSamplerState(sampler, index: 0)
         
-        // 1) Table felt
+        // 1) Draw table felt
         drawTableFelt(with: encoder)
         
-        // 2) Table rails/pockets
+        // 2) Draw rails and pockets
         drawTableWood(with: encoder)
         
-        // 3) Billiard balls
+        // 3) Draw billiard balls
         drawBalls(with: encoder)
         
         encoder.endEncoding()
@@ -574,15 +574,18 @@ final class Renderer: NSObject, MTKViewDelegate, ObservableObject {
     
     private func drawTableFelt(with encoder: MTLRenderCommandEncoder) {
         guard let vb = tableVertexBuffer, let ib = tableIndexBuffer else { return }
+        
+        // The table's felt uses the first 6 indices
         let feltIndexCount = 6
         
         var uniforms = Uniforms(
             modelMatrix:      table.modelMatrix,
             viewMatrix:       camera.viewMatrix,
             projectionMatrix: camera.projectionMatrix,
-            lightPosition:    [0,2,2]
+            // Light is moved higher => (0,6,6)
+            lightPosition:    [0, 6, 6]
         )
-        var materialId: Float = 0 // 0 => felt
+        var materialId: Float = 0.0 // => green felt
         
         encoder.setVertexBuffer(vb, offset: 0, index: 0)
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
@@ -598,18 +601,20 @@ final class Renderer: NSObject, MTKViewDelegate, ObservableObject {
     private func drawTableWood(with encoder: MTLRenderCommandEncoder) {
         guard let vb = tableVertexBuffer, let ib = tableIndexBuffer else { return }
         
-        let feltIndexCount = 6
+        let feltIndexCount  = 6
         let totalIndexCount = table.indices.count
         let woodIndexCount  = totalIndexCount - feltIndexCount
-        let woodOffset      = feltIndexCount * MemoryLayout<UInt16>.stride
+        
+        // Byte offset for the wood indices
+        let woodOffset = feltIndexCount * MemoryLayout<UInt16>.stride
         
         var uniforms = Uniforms(
             modelMatrix:      table.modelMatrix,
             viewMatrix:       camera.viewMatrix,
             projectionMatrix: camera.projectionMatrix,
-            lightPosition:    [0,2,2]
+            lightPosition:    [0, 6, 6]
         )
-        var materialId: Float = 1 // 1 => wood
+        var materialId: Float = 1.0 // => wood
         
         encoder.setVertexBuffer(vb, offset: 0, index: 0)
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
@@ -629,18 +634,19 @@ final class Renderer: NSObject, MTKViewDelegate, ObservableObject {
         encoder.setVertexBuffer(vb, offset: 0, index: 0)
         
         for pos in balls {
-            // We'll pass materialId=10 => fallback color
-            var materialId: Float = 10
+            // We'll pass materialId=10 => fallback color (red).
+            var materialId: Float = 10.0
             
+            // Scale ball to about 5cm radius => 0.05
             let scaleMat = scale(0.05)
             let transMat = translate(pos)
-            let model = transMat * scaleMat
+            let model    = transMat * scaleMat
             
             var uniforms = Uniforms(
                 modelMatrix:      model,
                 viewMatrix:       camera.viewMatrix,
                 projectionMatrix: camera.projectionMatrix,
-                lightPosition:    [0,2,2]
+                lightPosition:    [0, 6, 6] // same higher light
             )
             
             encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
@@ -654,6 +660,7 @@ final class Renderer: NSObject, MTKViewDelegate, ObservableObject {
         }
     }
     
+    // Helper transforms
     private func translate(_ pos: SIMD3<Float>) -> matrix_float4x4 {
         var m = matrix_identity_float4x4
         m.columns.3 = SIMD4<Float>(pos, 1)
@@ -677,9 +684,15 @@ struct MetalView: UIViewRepresentable {
     
     func makeUIView(context: Context) -> MTKView {
         let view = MTKView(frame: .zero, device: renderer.device)
-        view.delegate = renderer
+        
+        // Match pipeline format
+        view.colorPixelFormat = .bgra8Unorm
         view.depthStencilPixelFormat = .depth32Float
-        view.clearColor = MTLClearColorMake(0.2, 0.3, 0.4, 1)
+        
+        // Lighten the background clear color
+        view.clearColor = MTLClearColorMake(0.8, 0.9, 0.8, 1.0)
+        
+        view.delegate = renderer
         return view
     }
     
@@ -692,11 +705,14 @@ struct MetalView: UIViewRepresentable {
 struct ContentView: View {
     @StateObject private var renderer: Renderer
     
-    @State private var lastDrag: CGSize  = .zero
+    @State private var lastDrag: CGSize   = .zero
     @State private var lastPinch: CGFloat = 1.0
     
     init() {
+        // Create a temporary MTKView to initialize the renderer
         let tempView = MTKView()
+        tempView.colorPixelFormat = .bgra8Unorm
+        
         let tempRenderer = Renderer(metalKitView: tempView)
         _renderer = StateObject(wrappedValue: tempRenderer)
     }
@@ -706,7 +722,7 @@ struct ContentView: View {
             ZStack {
                 MetalView(renderer: renderer)
                     .gesture(
-                        // Drag => rotate/pitch
+                        // Drag => rotate/pitch camera
                         DragGesture()
                             .onChanged { value in
                                 let dx = Float(value.translation.width  - lastDrag.width)
@@ -732,7 +748,7 @@ struct ContentView: View {
                     )
             }
             .onAppear {
-                // Adjust camera aspect ratio
+                // Update aspect ratio
                 renderer.camera.aspectRatio = Float(geo.size.width / geo.size.height)
             }
         }
