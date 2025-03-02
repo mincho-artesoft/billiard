@@ -962,77 +962,77 @@ final class Renderer: NSObject, MTKViewDelegate, ObservableObject {
     }
 }
 
-//==================================================
-// MARK: - SwiftUI MetalView
-//==================================================
-struct MetalView: UIViewRepresentable {
-    @ObservedObject var renderer: Renderer
-    
-    func makeUIView(context: Context) -> MTKView {
-        let view = MTKView(frame: .zero, device: renderer.device)
-        view.colorPixelFormat        = .bgra8Unorm
-        view.depthStencilPixelFormat = .depth32Float
-        view.clearColor = MTLClearColorMake(0.8, 0.9, 0.8, 1.0)
-        
-        view.delegate = renderer
-        return view
-    }
-    
-    func updateUIView(_ uiView: MTKView, context: Context) {}
-}
+////==================================================
+//// MARK: - SwiftUI MetalView
+////==================================================
+//struct MetalView: UIViewRepresentable {
+//    @ObservedObject var renderer: Renderer
+//    
+//    func makeUIView(context: Context) -> MTKView {
+//        let view = MTKView(frame: .zero, device: renderer.device)
+//        view.colorPixelFormat        = .bgra8Unorm
+//        view.depthStencilPixelFormat = .depth32Float
+//        view.clearColor = MTLClearColorMake(0.8, 0.9, 0.8, 1.0)
+//        
+//        view.delegate = renderer
+//        return view
+//    }
+//    
+//    func updateUIView(_ uiView: MTKView, context: Context) {}
+//}
 
 //==================================================
 // MARK: - ContentView
 //==================================================
-struct ContentView: View {
-    @StateObject private var renderer: Renderer
-    
-    @State private var lastDrag: CGSize   = .zero
-    @State private var lastPinch: CGFloat = 1.0
-    
-    init() {
-        // Create a temporary MTKView to initialize the renderer
-        let tempView = MTKView()
-        tempView.colorPixelFormat = .bgra8Unorm
-        
-        let tempRenderer = Renderer(metalKitView: tempView)
-        _renderer = StateObject(wrappedValue: tempRenderer)
-    }
-    
-    var body: some View {
-        GeometryReader { geo in
-            ZStack {
-                MetalView(renderer: renderer)
-                    .gesture(
-                        DragGesture()
-                            .onChanged { value in
-                                let dx = Float(value.translation.width  - lastDrag.width)
-                                let dy = Float(value.translation.height - lastDrag.height)
-                                renderer.updateCameraDrag(deltaX: dx, deltaY: dy)
-                                lastDrag = value.translation
-                            }
-                            .onEnded { _ in
-                                lastDrag = .zero
-                            }
-                    )
-                    .gesture(
-                        MagnificationGesture()
-                            .onChanged { val in
-                                let pinchDelta = val - lastPinch
-                                renderer.updateCameraZoom(pinch: Float(pinchDelta))
-                                lastPinch = val
-                            }
-                            .onEnded { _ in
-                                lastPinch = 1.0
-                            }
-                    )
-            }
-            .onAppear {
-                renderer.camera.aspectRatio = Float(geo.size.width / geo.size.height)
-            }
-        }
-    }
-}
+//struct ContentView: View {
+//    @StateObject private var renderer: Renderer
+//    
+//    @State private var lastDrag: CGSize   = .zero
+//    @State private var lastPinch: CGFloat = 1.0
+//    
+//    init() {
+//        // Create a temporary MTKView to initialize the renderer
+//        let tempView = MTKView()
+//        tempView.colorPixelFormat = .bgra8Unorm
+//        
+//        let tempRenderer = Renderer(metalKitView: tempView)
+//        _renderer = StateObject(wrappedValue: tempRenderer)
+//    }
+//    
+//    var body: some View {
+//        GeometryReader { geo in
+//            ZStack {
+//                MetalView(renderer: renderer)
+//                    .gesture(
+//                        DragGesture()
+//                            .onChanged { value in
+//                                let dx = Float(value.translation.width  - lastDrag.width)
+//                                let dy = Float(value.translation.height - lastDrag.height)
+//                                renderer.updateCameraDrag(deltaX: dx, deltaY: dy)
+//                                lastDrag = value.translation
+//                            }
+//                            .onEnded { _ in
+//                                lastDrag = .zero
+//                            }
+//                    )
+//                    .gesture(
+//                        MagnificationGesture()
+//                            .onChanged { val in
+//                                let pinchDelta = val - lastPinch
+//                                renderer.updateCameraZoom(pinch: Float(pinchDelta))
+//                                lastPinch = val
+//                            }
+//                            .onEnded { _ in
+//                                lastPinch = 1.0
+//                            }
+//                    )
+//            }
+//            .onAppear {
+//                renderer.camera.aspectRatio = Float(geo.size.width / geo.size.height)
+//            }
+//        }
+//    }
+//}
 
 //==================================================
 // MARK: - Transform Helpers
