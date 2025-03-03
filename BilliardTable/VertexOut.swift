@@ -383,6 +383,13 @@ fragment float4 fragmentShader(
 }
 """
 
+// MARK: - Ball Data Structure for Swift
+struct BallData {
+    var position: SIMD2<Float>    // x, y
+    var velocity: SIMD2<Float>    // vx, vy
+    var angularVelocity: Float    // Angular velocity (radians/sec)
+}
+
 // MARK: - Metal View
 struct MetalView: UIViewRepresentable {
     @Binding var time: Float
@@ -398,7 +405,7 @@ struct MetalView: UIViewRepresentable {
         private var lastFrameTime: Float
         
         // Ball data
-        private var balls: [SIMD4<Float>]
+        private var balls: [BallData]
         private var ballBuffer: MTLBuffer?
         
         // Cue data
@@ -417,52 +424,52 @@ struct MetalView: UIViewRepresentable {
         
         // Cue speeds
         private let cuePullSpeed: Float = 1.0   // Pull-back
-        private let cueStrikeSpeed: Float = 10.0 // Strike
-        private let maxCueOffset: Float = 2.5   // Max pull-back distance
+        private let cueStrikeSpeed: Float = 5.0 // Strike (reduced for realism)
+        private let maxCueOffset: Float = 2.0   // Max pull-back distance
         
         // Collision/physics
         private var hitTriggered: Bool = false
         private var shooting: Bool = false
         private var powerAtRelease: Float = 0.0
         
-        // Tuned friction/restitution to ensure balls actually stop
-        private let friction: Float = 0.92
-        private let restitution: Float = 0.75
-        private let minVelocity: Float = 0.05
+        // Physics constants
+        private let friction: Float = 0.98       // Slightly less friction
+        private let restitution: Float = 0.9     // More elastic collisions
+        private let minVelocity: Float = 0.01    // Lower threshold to stop
+        private let ballMass: Float = 1.0        // Equal mass for all balls
         
         init(parent: MetalView) {
             self.parent = parent
             self.device = MTLCreateSystemDefaultDevice()
             self.commandQueue = device?.makeCommandQueue()
             self.lastFrameTime = parent.time
-            // 16 balls:
+            // 16 balls
             self.balls = [
-                // x, y, vx, vy
-                SIMD4<Float>( 0.0,  5.0,  0.0,  0.0),  // Cue ball
-                SIMD4<Float>(-0.5, -2.0,  0.0,  0.0),
-                SIMD4<Float>( 0.5, -2.0,  0.0,  0.0),
-                SIMD4<Float>(-1.0, -1.5, 0.0,  0.0),
-                SIMD4<Float>( 0.0, -1.5, 0.0,  0.0),
-                SIMD4<Float>( 1.0, -1.5, 0.0,  0.0),
-                SIMD4<Float>(-1.5, -1.0, 0.0,  0.0),
-                SIMD4<Float>(-0.5, -1.0, 0.0,  0.0),
-                SIMD4<Float>( 0.5, -1.0, 0.0,  0.0),
-                SIMD4<Float>( 1.5, -1.0, 0.0,  0.0),
-                SIMD4<Float>(-2.0, -0.5, 0.0,  0.0),
-                SIMD4<Float>(-1.0, -0.5, 0.0,  0.0),
-                SIMD4<Float>( 0.0, -0.5, 0.0,  0.0),
-                SIMD4<Float>( 1.0, -0.5, 0.0,  0.0),
-                SIMD4<Float>( 2.0, -0.5, 0.0,  0.0),
-                SIMD4<Float>( 0.0,  0.0,  0.0,  0.0)
+                BallData(position: SIMD2<Float>( 0.0,  5.0), velocity: SIMD2<Float>(0.0, 0.0), angularVelocity: 0.0),  // Cue ball
+                BallData(position: SIMD2<Float>(-0.5, -2.0), velocity: SIMD2<Float>(0.0, 0.0), angularVelocity: 0.0),
+                BallData(position: SIMD2<Float>( 0.5, -2.0), velocity: SIMD2<Float>(0.0, 0.0), angularVelocity: 0.0),
+                BallData(position: SIMD2<Float>(-1.0, -1.5), velocity: SIMD2<Float>(0.0, 0.0), angularVelocity: 0.0),
+                BallData(position: SIMD2<Float>( 0.0, -1.5), velocity: SIMD2<Float>(0.0, 0.0), angularVelocity: 0.0),
+                BallData(position: SIMD2<Float>( 1.0, -1.5), velocity: SIMD2<Float>(0.0, 0.0), angularVelocity: 0.0),
+                BallData(position: SIMD2<Float>(-1.5, -1.0), velocity: SIMD2<Float>(0.0, 0.0), angularVelocity: 0.0),
+                BallData(position: SIMD2<Float>(-0.5, -1.0), velocity: SIMD2<Float>(0.0, 0.0), angularVelocity: 0.0),
+                BallData(position: SIMD2<Float>( 0.5, -1.0), velocity: SIMD2<Float>(0.0, 0.0), angularVelocity: 0.0),
+                BallData(position: SIMD2<Float>( 1.5, -1.0), velocity: SIMD2<Float>(0.0, 0.0), angularVelocity: 0.0),
+                BallData(position: SIMD2<Float>(-2.0, -0.5), velocity: SIMD2<Float>(0.0, 0.0), angularVelocity: 0.0),
+                BallData(position: SIMD2<Float>(-1.0, -0.5), velocity: SIMD2<Float>(0.0, 0.0), angularVelocity: 0.0),
+                BallData(position: SIMD2<Float>( 0.0, -0.5), velocity: SIMD2<Float>(0.0, 0.0), angularVelocity: 0.0),
+                BallData(position: SIMD2<Float>( 1.0, -0.5), velocity: SIMD2<Float>(0.0, 0.0), angularVelocity: 0.0),
+                BallData(position: SIMD2<Float>( 2.0, -0.5), velocity: SIMD2<Float>(0.0, 0.0), angularVelocity: 0.0),
+                BallData(position: SIMD2<Float>( 0.0,  0.0), velocity: SIMD2<Float>(0.0, 0.0), angularVelocity: 0.0)
             ]
             
             super.init()
             
-            // Create buffers, compile pipeline
             if let device = device {
-                // Balls
+                // Ball buffer (only position and velocity for Metal shader)
+                var ballShaderData = balls.map { SIMD4<Float>($0.position.x, $0.position.y, $0.velocity.x, $0.velocity.y) }
                 ballBuffer = device.makeBuffer(
-                    bytes: &balls,
+                    bytes: &ballShaderData,
                     length: MemoryLayout<SIMD4<Float>>.stride * 16,
                     options: .storageModeShared
                 )
@@ -525,7 +532,7 @@ struct MetalView: UIViewRepresentable {
         // Physics update each frame
         func updatePhysics(deltaTime: Float) {
             guard let ballBuffer = ballBuffer else { return }
-            let ballData = ballBuffer.contents().bindMemory(to: SIMD4<Float>.self, capacity: 16)
+            let ballShaderData = ballBuffer.contents().bindMemory(to: SIMD4<Float>.self, capacity: 16)
             
             // Cue stick control (pull back / shoot)
             if parent.isTouching && !shooting {
@@ -533,8 +540,7 @@ struct MetalView: UIViewRepresentable {
                 if cueOffset > maxCueOffset {
                     cueOffset = maxCueOffset
                 }
-            }
-            else if !parent.isTouching && cueOffset > 0.0 {
+            } else if !parent.isTouching && cueOffset > 0.0 {
                 // Released => strike
                 if !shooting {
                     powerAtRelease = cueOffset / maxCueOffset
@@ -544,10 +550,9 @@ struct MetalView: UIViewRepresentable {
                 cueOffset -= cueStrikeSpeed * deltaTime
                 if cueOffset <= 0.0 {
                     cueOffset = 0.0
-                    // Apply velocity to the cue ball
-                    let baseVelocity: Float = -10.0
-                    ballData[0].z = 0.0
-                    ballData[0].w = baseVelocity * (1.0 + powerAtRelease) // up to ~ -20
+                    // Apply realistic velocity to the cue ball
+                    let baseVelocity: Float = -5.0 // Reduced for realism (e.g., ~5 m/s max)
+                    balls[0].velocity = SIMD2<Float>(0.0, baseVelocity * (0.5 + powerAtRelease)) // Range: -2.5 to -5.0
                     hitTriggered = true
                     shooting = false
                     powerAtRelease = 0.0
@@ -557,11 +562,11 @@ struct MetalView: UIViewRepresentable {
                 }
             }
             
-            // If we've struck the ball, bring back the cue once all balls stop
+            // Reset cue when all balls stop
             if !parent.isTouching && hitTriggered {
                 var allStopped = true
-                for i in 0..<16 {
-                    let vel = SIMD2<Float>(ballData[i].z, ballData[i].w)
+                for ball in balls {
+                    let vel = ball.velocity
                     // If pocketed => skip
                     if vel.x.isInfinite { continue }
                     
@@ -571,93 +576,121 @@ struct MetalView: UIViewRepresentable {
                     }
                 }
                 if allStopped {
-                    // All are at rest or pocketed
                     hitTriggered = false
                     showCueValue = 1 // Re-show the cue
                 }
             }
             
-            // Update ball positions and handle collisions
-            for i in 0..<16 {
-                var pos = SIMD2<Float>(ballData[i].x, ballData[i].y)
-                var vel = SIMD2<Float>(ballData[i].z, ballData[i].w)
-                
-                // Pocketed => skip
-                if vel.x.isInfinite { continue }
-                
-                // Move
-                pos += vel * deltaTime
-                
-                // Check pockets
-                if checkPocket(pos: pos) {
-                    // Mark as pocketed
-                    vel = SIMD2<Float>(Float.infinity, Float.infinity)
-                    pos = SIMD2<Float>(0.0, 0.0)
-                } else {
-                    // Cushion collisions
-                    if abs(pos.x) > tableWidth - ballRadius {
-                        pos.x = (pos.x > 0
-                                 ? tableWidth - ballRadius
-                                 : -tableWidth + ballRadius)
-                        vel.x = -vel.x * restitution
-                    }
-                    if abs(pos.y) > tableLength - ballRadius {
-                        pos.y = (pos.y > 0
-                                 ? tableLength - ballRadius
-                                 : -tableLength + ballRadius)
-                        vel.y = -vel.y * restitution
-                    }
-                }
-                
-                // Apply friction
-                vel *= friction
-                // Snap small velocity to zero
-                if length(vel) < 0.01 {
-                    vel = SIMD2<Float>(0.0, 0.0)
-                }
-                
-                // Write results
-                ballData[i].x = pos.x
-                ballData[i].y = pos.y
-                ballData[i].z = vel.x
-                ballData[i].w = vel.y
-            }
+            // Update ball positions and handle collisions with sub-stepping
+            let subSteps = 2 // Increase precision for fast-moving balls
+            let subDeltaTime = deltaTime / Float(subSteps)
             
-            // Ball-ball collisions
-            for i in 0..<15 {
-                for j in (i + 1)..<16 {
-                    let pos1 = SIMD2<Float>(ballData[i].x, ballData[i].y)
-                    let pos2 = SIMD2<Float>(ballData[j].x, ballData[j].y)
-                    let vel1 = SIMD2<Float>(ballData[i].z, ballData[i].w)
-                    let vel2 = SIMD2<Float>(ballData[j].z, ballData[j].w)
+            for _ in 0..<subSteps {
+                // Move balls and apply friction
+                for i in 0..<16 {
+                    var pos = balls[i].position
+                    var vel = balls[i].velocity
+                    var angVel = balls[i].angularVelocity
                     
-                    if vel1.x.isInfinite || vel2.x.isInfinite { continue }
+                    // Skip pocketed balls
+                    if vel.x.isInfinite { continue }
                     
-                    let delta = pos2 - pos1
-                    let dist = length(delta)
+                    // Update position
+                    pos += vel * subDeltaTime
                     
-                    // Overlap => collide
-                    if dist < (2.0 * ballRadius) {
-                        let normal = normalize(delta)
-                        let relativeVel = vel2 - vel1
-                        let impulse = dot(relativeVel, normal)
-                        if impulse < 0.0 {
-                            // Collide with restitution
-                            let combinedRest = 0.75
-                            let impulseMag = -(Float(1.0) + Float(combinedRest)) * impulse / Float(2.0)
-                            ballData[i].z += impulseMag * normal.x
-                            ballData[i].w += impulseMag * normal.y
-                            ballData[j].z -= impulseMag * normal.x
-                            ballData[j].w -= impulseMag * normal.y
-                            
-                            // Push them out of overlap
-                            let overlap = (2.0 * ballRadius) - dist
-                            ballData[i].x -= normal.x * (overlap * 0.5)
-                            ballData[i].y -= normal.y * (overlap * 0.5)
-                            ballData[j].x += normal.x * (overlap * 0.5)
-                            ballData[j].y += normal.y * (overlap * 0.5)
+                    // Check pockets
+                    if checkPocket(pos: pos) {
+                        vel = SIMD2<Float>(Float.infinity, Float.infinity)
+                        angVel = 0.0
+                        pos = SIMD2<Float>(0.0, 0.0)
+                    } else {
+                        // Cushion collisions
+                        if abs(pos.x) > tableWidth - ballRadius {
+                            pos.x = (pos.x > 0 ? tableWidth - ballRadius : -tableWidth + ballRadius)
+                            vel.x = -vel.x * restitution
+                            // Add angular velocity from wall hit (simplified)
+                            angVel += vel.y * 0.5 / ballRadius
+                        }
+                        if abs(pos.y) > tableLength - ballRadius {
+                            pos.y = (pos.y > 0 ? tableLength - ballRadius : -tableLength + ballRadius)
+                            vel.y = -vel.y * restitution
+                            angVel -= vel.x * 0.5 / ballRadius
                         }
                     }
+                    
+                    // Apply friction to linear and angular velocity
+                    vel *= friction
+                    angVel *= friction
+                    if length(vel) < minVelocity {
+                        vel = SIMD2<Float>(0.0, 0.0)
+                    }
+                    if abs(angVel) < 0.01 {
+                        angVel = 0.0
+                    }
+                    
+                    // Update ball data
+                    balls[i].position = pos
+                    balls[i].velocity = vel
+                    balls[i].angularVelocity = angVel
+                }
+                
+                // Ball-ball collisions
+                for i in 0..<15 {
+                    for j in (i + 1)..<16 {
+                        let pos1 = balls[i].position
+                        let pos2 = balls[j].position
+                        var vel1 = balls[i].velocity
+                        var vel2 = balls[j].velocity
+                        var angVel1 = balls[i].angularVelocity
+                        var angVel2 = balls[j].angularVelocity
+                        
+                        if vel1.x.isInfinite || vel2.x.isInfinite { continue }
+                        
+                        let delta = pos2 - pos1
+                        let dist = length(delta)
+                        
+                        if dist < (2.0 * ballRadius) {
+                            let normal = normalize(delta)
+                            let relativeVel = vel1 - vel2
+                            let impulse = dot(relativeVel, normal)
+                            
+                            if impulse > 0.0 { // Only if moving toward each other
+                                // Calculate impulse with mass and restitution
+                                let impulseMag = -(1.0 + restitution) * impulse / (2.0 / ballMass)
+                                
+                                // Update velocities
+                                vel1 += normal * impulseMag / ballMass
+                                vel2 -= normal * impulseMag / ballMass
+                                
+                                // Calculate tangential velocity for spin
+                                let tangent = SIMD2<Float>(-normal.y, normal.x)
+                                let relVelTangent = dot(relativeVel, tangent)
+                                let frictionImpulse = relVelTangent * 0.1 // Dynamic friction factor
+                                
+                                // Apply spin (simplified 2D angular velocity)
+                                angVel1 += frictionImpulse / ballRadius
+                                angVel2 -= frictionImpulse / ballRadius
+                                
+                                // Resolve overlap
+                                let overlap = (2.0 * ballRadius) - dist
+                                let correction = normal * (overlap * 0.5)
+                                balls[i].position -= correction
+                                balls[j].position += correction
+                                
+                                // Update velocities
+                                balls[i].velocity = vel1
+                                balls[j].velocity = vel2
+                                balls[i].angularVelocity = angVel1
+                                balls[j].angularVelocity = angVel2
+                            }
+                        }
+                    }
+                }
+                
+                // Update shader buffer
+                for i in 0..<16 {
+                    ballShaderData[i] = SIMD4<Float>(balls[i].position.x, balls[i].position.y,
+                                                    balls[i].velocity.x, balls[i].velocity.y)
                 }
             }
         }
@@ -700,7 +733,7 @@ struct MetalView: UIViewRepresentable {
                                      length: MemoryLayout<Float>.size,
                                      index: 1)
             
-            // 3) Balls
+            // 3) Balls (already updated in updatePhysics)
             encoder.setFragmentBuffer(ballBuffer, offset: 0, index: 2)
             
             // 4) Cue Offset
@@ -759,8 +792,8 @@ struct ContentView: View {
                     }
             )
             .onAppear {
-                let timer = Timer.scheduledTimer(withTimeInterval: 1 / 60, repeats: true) { _ in
-                    time += 1 / 60
+                let timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { _ in
+                    time += 1.0 / 60.0
                 }
                 RunLoop.current.add(timer, forMode: .common)
             }
