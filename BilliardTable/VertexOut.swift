@@ -1,7 +1,7 @@
 import SwiftUI
 import MetalKit
 
-// MARK: - Metal Shader
+// MARK: - Metal Shader (unchanged)
 let metalShader = """
 #include <metal_stdlib>
 using namespace metal;
@@ -257,34 +257,35 @@ fragment float4 fragmentShader(VertexOut in [[stage_in]],
 // MARK: - Metal View
 struct MetalView: UIViewRepresentable {
     @Binding var time: Float
-    @Binding var triggerHit: Bool
+    @Binding var isTouching: Bool
     
     class Coordinator: NSObject, MTKViewDelegate {
         private let parent: MetalView
         private let device: MTLDevice?
         private let commandQueue: MTLCommandQueue?
-        private let pipelineState: MTLRenderPipelineState?
+        private var pipelineState: MTLRenderPipelineState?
         private var lastFrameTime: Float
-        private var balls: [SIMD4<Float>]  // x, y = position; z, w = velocity
+        private var balls: [SIMD4<Float>]
         private var ballBuffer: MTLBuffer?
         private var cueOffset: Float = 0.0
         private var cueBuffer: MTLBuffer?
         private let ballRadius: Float = 0.47
-        private let tableWidth: Float = 7.6    // hIn.x adjusted for ball radius
-        private let tableLength: Float = 13.3  // hIn.y adjusted for ball radius
-        private var hitInProgress: Bool = false
+        private let tableWidth: Float = 7.6
+        private let tableLength: Float = 13.3
         private let pocketRadius: Float = 0.53
+        private var cueSpeed: Float = 1.0      // Speed of cue pulling back
+        private let maxCueOffset: Float = 2.5  // Max pull-back distance
+        private var hitTriggered: Bool = false
+        private var shooting: Bool = false     // Track shooting animation
         
         init(parent: MetalView) {
             self.parent = parent
             self.device = MTLCreateSystemDefaultDevice()
             self.commandQueue = device?.makeCommandQueue()
             self.lastFrameTime = parent.time
-            
-            // Initialize balls
-            balls = [
-                SIMD4<Float>(0.0, 5.0, 0.0, 0.0),    // Cue ball
-                SIMD4<Float>(-0.5, -2.0, 0.0, 0.0),  // Rack
+            self.balls = [
+                SIMD4<Float>(0.0, 5.0, 0.0, 0.0),
+                SIMD4<Float>(-0.5, -2.0, 0.0, 0.0),
                 SIMD4<Float>(0.5, -2.0, 0.0, 0.0),
                 SIMD4<Float>(-1.0, -1.5, 0.0, 0.0),
                 SIMD4<Float>(0.0, -1.5, 0.0, 0.0),
@@ -300,40 +301,45 @@ struct MetalView: UIViewRepresentable {
                 SIMD4<Float>(2.0, -0.5, 0.0, 0.0),
                 SIMD4<Float>(0.0, 0.0, 0.0, 0.0)
             ]
+            
+            super.init()
+            
             if let device = device {
                 ballBuffer = device.makeBuffer(bytes: &balls, length: MemoryLayout<SIMD4<Float>>.stride * 16, options: .storageModeShared)
                 cueBuffer = device.makeBuffer(length: MemoryLayout<Float>.stride, options: .storageModeShared)
-            }
-            
-            var pipeline: MTLRenderPipelineState? = nil
-            if let device = device {
+                
                 do {
                     let library = try device.makeLibrary(source: metalShader, options: nil)
-                    let vertexFunction = library.makeFunction(name: "vertexShader")
-                    let fragmentFunction = library.makeFunction(name: "fragmentShader")
+                    guard let vertexFunction = library.makeFunction(name: "vertexShader") else {
+                        print("Vertex shader function not found")
+                        return
+                    }
+                    guard let fragmentFunction = library.makeFunction(name: "fragmentShader") else {
+                        print("Fragment shader function not found")
+                        return
+                    }
                     
                     let descriptor = MTLRenderPipelineDescriptor()
                     descriptor.vertexFunction = vertexFunction
                     descriptor.fragmentFunction = fragmentFunction
                     descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
                     
-                    pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
+                    pipelineState = try device.makeRenderPipelineState(descriptor: descriptor)
                 } catch {
                     print("Failed to create pipeline state: \(error)")
+                    pipelineState = nil
                 }
             }
-            self.pipelineState = pipeline
-            super.init()
         }
         
         func checkPocket(pos: SIMD2<Float>) -> Bool {
             let pocketPositions: [SIMD2<Float>] = [
-                SIMD2<Float>(-tableWidth + ballRadius, -tableLength + ballRadius),  // Bottom-left
-                SIMD2<Float>(tableWidth - ballRadius, -tableLength + ballRadius),   // Bottom-right
-                SIMD2<Float>(-tableWidth + ballRadius, 0.0),                        // Middle-left
-                SIMD2<Float>(tableWidth - ballRadius, 0.0),                         // Middle-right
-                SIMD2<Float>(-tableWidth + ballRadius, tableLength - ballRadius),   // Top-left
-                SIMD2<Float>(tableWidth - ballRadius, tableLength - ballRadius)     // Top-right
+                SIMD2<Float>(-tableWidth + ballRadius, -tableLength + ballRadius),
+                SIMD2<Float>(tableWidth - ballRadius, -tableLength + ballRadius),
+                SIMD2<Float>(-tableWidth + ballRadius, 0.0),
+                SIMD2<Float>(tableWidth - ballRadius, 0.0),
+                SIMD2<Float>(-tableWidth + ballRadius, tableLength - ballRadius),
+                SIMD2<Float>(tableWidth - ballRadius, tableLength - ballRadius)
             ]
             
             for pocket in pocketPositions {
@@ -348,47 +354,56 @@ struct MetalView: UIViewRepresentable {
             guard let ballBuffer = ballBuffer else { return }
             let ballData = ballBuffer.contents().bindMemory(to: SIMD4<Float>.self, capacity: 16)
             
-            // Apply hit if triggered
-            if parent.triggerHit && !hitInProgress {
-                hitInProgress = true
-                cueOffset = 2.5
-                ballData[0].z = 0.0    // x-velocity
-                ballData[0].w = -10.0  // y-velocity (towards rack)
-                parent.triggerHit = false
-            }
-            
-            // Animate cue stick
-            if hitInProgress {
-                cueOffset -= 10.0 * deltaTime
+            // Cue stick control
+            if parent.isTouching && !shooting {
+                // Pull back while touching
+                cueOffset += cueSpeed * deltaTime
+                if cueOffset > maxCueOffset {
+                    cueOffset = maxCueOffset
+                }
+            } else if !parent.isTouching && cueOffset > 0.0 {
+                // Shoot when released
+                shooting = true
+                cueOffset -= cueSpeed * 2.0 * deltaTime  // Faster forward motion
                 if cueOffset <= 0.0 {
                     cueOffset = 0.0
-                    hitInProgress = false
+                    let hitPower = maxCueOffset * 10.0 * (cueOffset / maxCueOffset)  // Power based on pull-back distance
+                    ballData[0].z = 0.0
+                    ballData[0].w = -hitPower
+                    hitTriggered = true
+                    shooting = false
                 }
             }
             
+            // Reset hit state when balls stop
+            if !parent.isTouching && hitTriggered {
+                var allStopped = true
+                for i in 0..<16 {
+                    let vel = SIMD2<Float>(ballData[i].z, ballData[i].w)
+                    if length(vel) > 0.1 { allStopped = false; break }
+                }
+                if allStopped { hitTriggered = false }
+            }
+            
             // Update ball positions and velocities
-            let friction: Float = 0.95    // Stronger friction (5% loss per frame)
-            let minVelocity: Float = 0.1  // Higher threshold to stop
+            let friction: Float = 0.95
+            let minVelocity: Float = 0.1
             
             for i in 0..<16 {
                 var pos = SIMD2<Float>(ballData[i].x, ballData[i].y)
                 var vel = SIMD2<Float>(ballData[i].z, ballData[i].w)
                 
-                // Skip if ball is pocketed (velocity set to infinity)
                 if vel.x.isInfinite { continue }
                 
-                // Apply velocity
                 pos += vel * deltaTime
                 
-                // Check pockets
                 if checkPocket(pos: pos) {
                     vel = SIMD2<Float>(Float.infinity, Float.infinity)
-                    pos = SIMD2<Float>(0.0, 0.0)  // Move off table
+                    pos = SIMD2<Float>(0.0, 0.0)
                 } else {
-                    // Table boundaries
                     if abs(pos.x) > tableWidth - ballRadius {
                         pos.x = (pos.x > 0 ? tableWidth - ballRadius : -tableWidth + ballRadius)
-                        vel.x = -vel.x * 0.8  // Increased energy loss on walls
+                        vel.x = -vel.x * 0.8
                     }
                     if abs(pos.y) > tableLength - ballRadius {
                         pos.y = (pos.y > 0 ? tableLength - ballRadius : -tableLength + ballRadius)
@@ -396,10 +411,7 @@ struct MetalView: UIViewRepresentable {
                     }
                 }
                 
-                // Apply friction
                 vel *= friction
-                
-                // Stop small velocities
                 if length(vel) < minVelocity {
                     vel = SIMD2<Float>(0.0, 0.0)
                 }
@@ -418,7 +430,6 @@ struct MetalView: UIViewRepresentable {
                     let vel1 = SIMD2<Float>(ballData[i].z, ballData[i].w)
                     let vel2 = SIMD2<Float>(ballData[j].z, ballData[j].w)
                     
-                    // Skip if either ball is pocketed
                     if vel1.x.isInfinite || vel2.x.isInfinite { continue }
                     
                     let delta = pos2 - pos1
@@ -428,20 +439,19 @@ struct MetalView: UIViewRepresentable {
                         let normal = normalize(delta)
                         let relativeVel = vel2 - vel1
                         let impulse = dot(relativeVel, normal)
-                        if impulse < 0.0 {  // Moving towards each other
-                            let restitution: Float = 0.85  // Reduced restitution
-                            let j = -(1.0 + restitution) * impulse / 2.0
-                            ballData[i].z += j * normal.x
-                            ballData[i].w += j * normal.y
-                            ballData[Int(j)].z -= j * normal.x
-                            ballData[Int(j)].w -= j * normal.y
+                        if impulse < 0.0 {
+                            let restitution: Float = 0.85
+                            let impulseMagnitude = -(1.0 + restitution) * impulse / 2.0
+                            ballData[i].z += impulseMagnitude * normal.x
+                            ballData[i].w += impulseMagnitude * normal.y
+                            ballData[j].z -= impulseMagnitude * normal.x
+                            ballData[j].w -= impulseMagnitude * normal.y
                             
-                            // Separate overlapping balls
                             let overlap = 2.0 * ballRadius - dist
                             ballData[i].x -= normal.x * overlap * 0.5
                             ballData[i].y -= normal.y * overlap * 0.5
-                            ballData[Int(j)].x += normal.x * overlap * 0.5
-                            ballData[Int(j)].y += normal.y * overlap * 0.5
+                            ballData[j].x += normal.x * overlap * 0.5
+                            ballData[j].y += normal.y * overlap * 0.5
                         }
                     }
                 }
@@ -461,7 +471,7 @@ struct MetalView: UIViewRepresentable {
                   let ballBuffer = ballBuffer,
                   let cueBuffer = cueBuffer else { return }
             
-            let deltaTime = min(parent.time - lastFrameTime, 0.1)  // Cap delta time
+            let deltaTime = min(parent.time - lastFrameTime, 0.1)
             lastFrameTime = parent.time
             updatePhysics(deltaTime: deltaTime)
             
@@ -501,12 +511,16 @@ struct MetalView: UIViewRepresentable {
 // MARK: - ContentView
 struct ContentView: View {
     @State private var time: Float = 0
-    @State private var triggerHit: Bool = false
+    @State private var isTouching: Bool = false
     
     var body: some View {
-        MetalView(time: $time, triggerHit: $triggerHit)
+        MetalView(time: $time, isTouching: $isTouching)
             .ignoresSafeArea()
-            .gesture(TapGesture().onEnded { triggerHit = true })
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in isTouching = true }
+                    .onEnded { _ in isTouching = false }
+            )
             .onAppear {
                 let timer = Timer.scheduledTimer(withTimeInterval: 1/60, repeats: true) { _ in
                     time += 1/60
