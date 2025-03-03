@@ -1,11 +1,3 @@
-//
-//  VertexOut.swift
-//  BilliardTable
-//
-//  Created by Mincho Milev on 3/2/25.
-//
-
-
 import SwiftUI
 import MetalKit
 
@@ -19,10 +11,12 @@ struct VertexOut {
     float2 uv;
 };
 
-// --------------------------------------------------
-// Utility Functions
-// --------------------------------------------------
+struct Ball {
+    float2 position;
+    float2 velocity;
+};
 
+// Utility Functions
 float3 hsvToRgb(float3 c) {
     float3 p = abs(fract(c.xxx + float3(1.0, 2.0/3.0, 1.0/3.0)) * 6.0 - 3.0);
     return c.z * mix(float3(1.0), clamp(p - 1.0, 0.0, 1.0), c.y);
@@ -42,7 +36,7 @@ float prSphDf(float3 p, float r) {
 }
 
 float prRoundCylDf(float3 p, float r, float rt, float h) {
-    float dxy = length(p.xy) - (r - (rt / 2.5) * p.z);  // Tapering radius
+    float dxy = length(p.xy) - (r - (rt / 2.5) * p.z);
     float dz = abs(p.z) - h;
     return min(min(max(dxy + rt, dz), max(dxy, dz + rt)), length(float2(dxy, dz) + rt) - rt);
 }
@@ -61,39 +55,17 @@ float smoothMax(float a, float b, float r) {
     return -smoothMin(-a, -b, r);
 }
 
-// --------------------------------------------------
 // Ball Handling
-// --------------------------------------------------
-
-void ballHit(float3 ro, float3 rd, thread float& dist, thread float3& normal, thread int& id) {
+void ballHit(float3 ro, float3 rd, thread float& dist, thread float3& normal, thread int& id, constant Ball* balls [[buffer(2)]]) {
     const int nBall = 16;
     const float rad = 0.47;
-    
-    float2 ballPos[nBall] = {
-        float2(0.0, 5.0),    // Cue ball
-        float2(-0.5, -2.0),  // Rack start
-        float2(0.5, -2.0),
-        float2(-1.0, -1.5),
-        float2(0.0, -1.5),
-        float2(1.0, -1.5),
-        float2(-1.5, -1.0),
-        float2(-0.5, -1.0),
-        float2(0.5, -1.0),
-        float2(1.5, -1.0),
-        float2(-2.0, -0.5),
-        float2(-1.0, -0.5),
-        float2(0.0, -0.5),
-        float2(1.0, -0.5),
-        float2(2.0, -0.5),
-        float2(0.0, 0.0)     // Apex of rack
-    };
     
     dist = 50.0;
     normal = float3(0.0);
     id = -1;
     
     for (int n = 0; n < nBall; n++) {
-        float3 u = ro - float3(ballPos[n].x, 0.05, ballPos[n].y);
+        float3 u = ro - float3(balls[n].position.x, 0.05, balls[n].position.y);
         float b = dot(rd, u);
         float w = b * b - dot(u, u) + rad * rad;
         if (w > 0.0) {
@@ -107,34 +79,29 @@ void ballHit(float3 ro, float3 rd, thread float& dist, thread float3& normal, th
     }
 }
 
-// --------------------------------------------------
 // Scene SDF + Shading
-// --------------------------------------------------
-float3 showScene(float3 ro, float3 rd, float time)
+float3 showScene(float3 ro, float3 rd, float time, float cueOffset, constant Ball* balls [[buffer(2)]])
 {
     const float hbLen = 8.0;
     const float bWid = 0.4;
-    const float2 hIn = float2(hbLen, hbLen * 1.75) - bWid; // x (short) = 7.6, z (long) = 13.3
+    const float2 hIn = float2(hbLen, hbLen * 1.75) - bWid;
+    const float PI = 3.14159;
 
     float3 col = float3(0.05, 0.05, 0.1);
     float t = 0.0;
     const float maxDist = 50.0;
 
-    // Check balls
     float dstBall;
     float3 ballNormal;
     int ballId;
-    ballHit(ro, rd, dstBall, ballNormal, ballId);
+    ballHit(ro, rd, dstBall, ballNormal, ballId, balls);
     
-    // Table and cue ray marching
     float dstTable = maxDist;
     float dstCue = maxDist;
     float3 cueHitPos;
     
     for (int i = 0; i < 80; i++) {
         float3 p = ro + rd * t;
-        
-        // Table surface
         float dSurface = prBoxDf(p, float3(hIn.x, 0.4, hIn.y));
         float3 pb = p;
         pb.y -= -0.6;
@@ -148,24 +115,21 @@ float3 showScene(float3 ro, float3 rd, float time)
         float pocketDist = length(q.xz);
         dTable = smoothMax(dTable, 0.53 - pocketDist, 0.01);
         
-        // Cue stick
-        float3 pc = p;
-        pc.yz -= float2(0.0, -0.6 * (hIn.y + bWid));  // Position above table
-        float aCue = sin(time * 0.5) * 0.3;  // Simple animation
-        float dCue = sin(time * 0.2) * 0.5;  // Simple oscillation
-        pc.xz = rot2D(pc.xz, 0.5 * 3.14159 - aCue);  // Rotate around Z
-        pc.z -= -3.05 - dCue;  // Shift along Z
-        float dCueStick = prRoundCylDf(pc, 0.1, 0.05, 2.5);
-        
+        float3 pc = p - float3(balls[0].position.x, 0.05, balls[0].position.y);
+        pc.y -= 0.05;
+        float aCue = sin(time * 0.5) * 0.1;
+        pc.xz = -rot2D(pc.xz, aCue);
+        float cueLength = 2.5;
+        float ballRadius = 0.47;
+        float tipOffset = cueLength;
+        float maxCueOffset = -ballRadius;
+        pc.z -= (maxCueOffset - cueOffset - tipOffset);
+        float dCueStick = prRoundCylDf(pc, 0.1 - (0.015 / 2.5) * (pc.z + tipOffset), 0.05, cueLength);
         float d = min(dTable, dCueStick);
         
         if (d < 0.0005 || t > dstBall) {
-            if (dTable < dCueStick) {
-                dstTable = t;
-            } else {
-                dstCue = t;
-                cueHitPos = pc;
-            }
+            if (dTable < dCueStick) dstTable = t;
+            else { dstCue = t; cueHitPos = pc; }
             break;
         }
         t += d * 0.7;
@@ -177,29 +141,41 @@ float3 showScene(float3 ro, float3 rd, float time)
     
     if (minDist < maxDist) {
         if (dstBall <= min(dstTable, dstCue)) {
-            // Ball hit
             float3 p = ro + rd * dstBall;
             float3 n = ballNormal;
             int id = ballId;
             
             if (id == 0) {
-                col = float3(1.0);  // Cue ball
+                col = float3(1.0);
             } else {
                 float c = float(id - 1);
-                col = hsvToRgb(float3(
-                    fmod(c / 15.0, 1.0),
-                    1.0 - 0.3 * fmod(c, 3.0),
-                    1.0 - 0.2 * fmod(c, 2.0)
-                ));
-                col *= (n.y > 0.0 ? 1.0 : 0.4);
+                float3 baseColor;
+                bool isStriped = (id >= 9);
+                if (id == 8) {
+                    baseColor = float3(0.0);
+                } else {
+                    baseColor = hsvToRgb(float3(fmod(c / 7.0, 1.0), 1.0, 1.0));
+                }
+                float2 uv = float2(atan2(n.x, n.z) / (2.0 * PI) + 0.5, acos(n.y) / PI);
+                if (isStriped && id != 8) {
+                    float stripeFactor = sin(uv.y * PI * 10.0);
+                    col = mix(float3(1.0), baseColor, step(0.0, stripeFactor));
+                } else {
+                    col = baseColor;
+                }
+                float2 circleCenter = float2(0.5, 0.5);
+                float circleRadius = 0.2;
+                float distToCenter = length(uv - circleCenter);
+                if (distToCenter < circleRadius && id != 0) {
+                    col = float3(1.0);
+                    if (distToCenter < circleRadius * 0.7) col = float3(0.0);
+                }
             }
-            
             col *= 0.2 + 0.8 * max(n.y, 0.0);
             float3 r = reflect(rd, n);
             float spec = pow(max(dot(r, normalize(lightPos - p)), 0.0), 16.0);
             col += float3(0.2) * spec;
         } else if (dstCue < dstTable) {
-            // Cue stick hit
             float3 p = ro + rd * dstCue;
             float3 eps = float3(0.001, 0.0, 0.0);
             float3 n = normalize(float3(
@@ -207,15 +183,13 @@ float3 showScene(float3 ro, float3 rd, float time)
                 prRoundCylDf(cueHitPos + eps.yxy, 0.1, 0.05, 2.5) - prRoundCylDf(cueHitPos - eps.yxy, 0.1, 0.05, 2.5),
                 prRoundCylDf(cueHitPos + eps.yyx, 0.1, 0.05, 2.5) - prRoundCylDf(cueHitPos - eps.yyx, 0.1, 0.05, 2.5)
             ));
-            
-            col = (cueHitPos.z < 2.2) ? float3(0.5, 0.3, 0.0) : float3(0.7, 0.7, 0.3);  // Shaft vs tip
+            col = (cueHitPos.z < 2.2) ? float3(0.5, 0.3, 0.0) : float3(0.7, 0.7, 0.3);
             float diff = max(dot(n, normalize(lightPos - p)), 0.0);
             float3 r = reflect(rd, n);
             float spec = pow(max(dot(r, normalize(lightPos - p)), 0.0), 16.0);
             col *= 0.3 + 0.7 * diff;
             col += float3(0.2) * spec;
         } else {
-            // Table hit
             float3 p = ro + rd * dstTable;
             float3 eps = float3(0.001, 0.0, 0.0);
             float3 n = normalize(float3(
@@ -223,20 +197,11 @@ float3 showScene(float3 ro, float3 rd, float time)
                 prBoxDf(p + eps.yxy, float3(hIn.x, 0.4, hIn.y)) - prBoxDf(p - eps.yxy, float3(hIn.x, 0.4, hIn.y)),
                 prBoxDf(p + eps.yyx, float3(hIn.x, 0.4, hIn.y)) - prBoxDf(p - eps.yyx, float3(hIn.x, 0.4, hIn.y))
             ));
-            
             float2 pocketCheck = float2(abs(p.x) - (hIn.x - bWid + 0.03), fmod(p.z + 0.5 * (hIn.y - bWid + 0.03), hIn.y - bWid + 0.03) - 0.5 * (hIn.y - bWid + 0.03));
             float pocketDist = length(pocketCheck);
-            
-            if (pocketDist < 0.53) {
-                col = float3(0.0, 0.0, 0.0);
-            }
-            else if (max(abs(p.x) - hIn.x, abs(p.z) - hIn.y) < 0.3) {
-                col = float3(0.1, 0.5, 0.3);
-            }
-            else {
-                col = float3(0.3, 0.1, 0.0);
-            }
-            
+            if (pocketDist < 0.53) col = float3(0.0);
+            else if (max(abs(p.x) - hIn.x, abs(p.z) - hIn.y) < 0.3) col = float3(0.1, 0.5, 0.3);
+            else col = float3(0.3, 0.1, 0.0);
             float diff = max(dot(n, normalize(lightPos - p)), 0.0);
             float3 r = reflect(rd, n);
             float spec = pow(max(dot(r, normalize(lightPos - p)), 0.0), 16.0);
@@ -244,21 +209,16 @@ float3 showScene(float3 ro, float3 rd, float time)
             col += float3(0.2) * spec;
         }
     }
-    
-    col += hsvToRgb(float3(time * 0.1, 0.3, 0.05)) * 0.02;
     return clamp(col, 0.0, 1.0);
 }
 
-// --------------------------------------------------
-// Vertex Shader
-// --------------------------------------------------
 vertex VertexOut vertexShader(uint vertexID [[vertex_id]])
 {
     constexpr float2 positions[4] = {
         float2(-1.0, -1.0),
-        float2( 1.0, -1.0),
-        float2(-1.0,  1.0),
-        float2( 1.0,  1.0)
+        float2(1.0, -1.0),
+        float2(-1.0, 1.0),
+        float2(1.0, 1.0)
     };
     constexpr float2 uvs[4] = {
         float2(0.0, 0.0),
@@ -266,36 +226,30 @@ vertex VertexOut vertexShader(uint vertexID [[vertex_id]])
         float2(0.0, 1.0),
         float2(1.0, 1.0)
     };
-    
     VertexOut out;
     out.position = float4(positions[vertexID], 0.0, 1.0);
     out.uv = uvs[vertexID];
     return out;
 }
 
-// --------------------------------------------------
-// Fragment Shader
-// --------------------------------------------------
 fragment float4 fragmentShader(VertexOut in [[stage_in]],
-                               constant float2 &resolution [[buffer(0)]],
-                               constant float &time       [[buffer(1)]])
+                              constant float2 &resolution [[buffer(0)]],
+                              constant float &time [[buffer(1)]],
+                              constant Ball* balls [[buffer(2)]],
+                              constant float &cueOffset [[buffer(3)]])
 {
     float2 uv = 2.0 * in.uv - 1.0;
     uv.x *= resolution.x / resolution.y;
-    
     float3 target = float3(0.0, 0.0, 0.0);
     float3 ro = float3(0.0, 10.0, 20.0);
     float angle = time * 0.1;
     ro = float3(sin(angle) * 20.0, 10.0, cos(angle) * 20.0);
-    
     float3 vd = normalize(target - ro);
     float3 right = normalize(cross(float3(0.0, 1.0, 0.0), vd));
     float3 up = normalize(cross(vd, right));
-    
     const float fov = 0.8;
     float3 rd = normalize(vd + right * uv.x * fov + up * uv.y * fov);
-    
-    float3 col = showScene(ro, rd, time);
+    float3 col = showScene(ro, rd, time, cueOffset, balls);
     return float4(col, 1.0);
 }
 """
@@ -303,6 +257,7 @@ fragment float4 fragmentShader(VertexOut in [[stage_in]],
 // MARK: - Metal View
 struct MetalView: UIViewRepresentable {
     @Binding var time: Float
+    @Binding var triggerHit: Bool
     
     class Coordinator: NSObject, MTKViewDelegate {
         private let parent: MetalView
@@ -310,12 +265,45 @@ struct MetalView: UIViewRepresentable {
         private let commandQueue: MTLCommandQueue?
         private let pipelineState: MTLRenderPipelineState?
         private var lastFrameTime: Float
+        private var balls: [SIMD4<Float>]  // x, y = position; z, w = velocity
+        private var ballBuffer: MTLBuffer?
+        private var cueOffset: Float = 0.0
+        private var cueBuffer: MTLBuffer?
+        private let ballRadius: Float = 0.47
+        private let tableWidth: Float = 7.6    // hIn.x adjusted for ball radius
+        private let tableLength: Float = 13.3  // hIn.y adjusted for ball radius
+        private var hitInProgress: Bool = false
+        private let pocketRadius: Float = 0.53
         
         init(parent: MetalView) {
             self.parent = parent
             self.device = MTLCreateSystemDefaultDevice()
             self.commandQueue = device?.makeCommandQueue()
             self.lastFrameTime = parent.time
+            
+            // Initialize balls
+            balls = [
+                SIMD4<Float>(0.0, 5.0, 0.0, 0.0),    // Cue ball
+                SIMD4<Float>(-0.5, -2.0, 0.0, 0.0),  // Rack
+                SIMD4<Float>(0.5, -2.0, 0.0, 0.0),
+                SIMD4<Float>(-1.0, -1.5, 0.0, 0.0),
+                SIMD4<Float>(0.0, -1.5, 0.0, 0.0),
+                SIMD4<Float>(1.0, -1.5, 0.0, 0.0),
+                SIMD4<Float>(-1.5, -1.0, 0.0, 0.0),
+                SIMD4<Float>(-0.5, -1.0, 0.0, 0.0),
+                SIMD4<Float>(0.5, -1.0, 0.0, 0.0),
+                SIMD4<Float>(1.5, -1.0, 0.0, 0.0),
+                SIMD4<Float>(-2.0, -0.5, 0.0, 0.0),
+                SIMD4<Float>(-1.0, -0.5, 0.0, 0.0),
+                SIMD4<Float>(0.0, -0.5, 0.0, 0.0),
+                SIMD4<Float>(1.0, -0.5, 0.0, 0.0),
+                SIMD4<Float>(2.0, -0.5, 0.0, 0.0),
+                SIMD4<Float>(0.0, 0.0, 0.0, 0.0)
+            ]
+            if let device = device {
+                ballBuffer = device.makeBuffer(bytes: &balls, length: MemoryLayout<SIMD4<Float>>.stride * 16, options: .storageModeShared)
+                cueBuffer = device.makeBuffer(length: MemoryLayout<Float>.stride, options: .storageModeShared)
+            }
             
             var pipeline: MTLRenderPipelineState? = nil
             if let device = device {
@@ -331,35 +319,159 @@ struct MetalView: UIViewRepresentable {
                     
                     pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
                 } catch {
-                    print("Failed to create pipeline state: \\(error)")
+                    print("Failed to create pipeline state: \(error)")
                 }
             }
             self.pipelineState = pipeline
             super.init()
         }
         
+        func checkPocket(pos: SIMD2<Float>) -> Bool {
+            let pocketPositions: [SIMD2<Float>] = [
+                SIMD2<Float>(-tableWidth + ballRadius, -tableLength + ballRadius),  // Bottom-left
+                SIMD2<Float>(tableWidth - ballRadius, -tableLength + ballRadius),   // Bottom-right
+                SIMD2<Float>(-tableWidth + ballRadius, 0.0),                        // Middle-left
+                SIMD2<Float>(tableWidth - ballRadius, 0.0),                         // Middle-right
+                SIMD2<Float>(-tableWidth + ballRadius, tableLength - ballRadius),   // Top-left
+                SIMD2<Float>(tableWidth - ballRadius, tableLength - ballRadius)     // Top-right
+            ]
+            
+            for pocket in pocketPositions {
+                if length(pos - pocket) < pocketRadius {
+                    return true
+                }
+            }
+            return false
+        }
+        
+        func updatePhysics(deltaTime: Float) {
+            guard let ballBuffer = ballBuffer else { return }
+            let ballData = ballBuffer.contents().bindMemory(to: SIMD4<Float>.self, capacity: 16)
+            
+            // Apply hit if triggered
+            if parent.triggerHit && !hitInProgress {
+                hitInProgress = true
+                cueOffset = 2.5
+                ballData[0].z = 0.0    // x-velocity
+                ballData[0].w = -10.0  // y-velocity (towards rack)
+                parent.triggerHit = false
+            }
+            
+            // Animate cue stick
+            if hitInProgress {
+                cueOffset -= 10.0 * deltaTime
+                if cueOffset <= 0.0 {
+                    cueOffset = 0.0
+                    hitInProgress = false
+                }
+            }
+            
+            // Update ball positions and velocities
+            let friction: Float = 0.95    // Stronger friction (5% loss per frame)
+            let minVelocity: Float = 0.1  // Higher threshold to stop
+            
+            for i in 0..<16 {
+                var pos = SIMD2<Float>(ballData[i].x, ballData[i].y)
+                var vel = SIMD2<Float>(ballData[i].z, ballData[i].w)
+                
+                // Skip if ball is pocketed (velocity set to infinity)
+                if vel.x.isInfinite { continue }
+                
+                // Apply velocity
+                pos += vel * deltaTime
+                
+                // Check pockets
+                if checkPocket(pos: pos) {
+                    vel = SIMD2<Float>(Float.infinity, Float.infinity)
+                    pos = SIMD2<Float>(0.0, 0.0)  // Move off table
+                } else {
+                    // Table boundaries
+                    if abs(pos.x) > tableWidth - ballRadius {
+                        pos.x = (pos.x > 0 ? tableWidth - ballRadius : -tableWidth + ballRadius)
+                        vel.x = -vel.x * 0.8  // Increased energy loss on walls
+                    }
+                    if abs(pos.y) > tableLength - ballRadius {
+                        pos.y = (pos.y > 0 ? tableLength - ballRadius : -tableLength + ballRadius)
+                        vel.y = -vel.y * 0.8
+                    }
+                }
+                
+                // Apply friction
+                vel *= friction
+                
+                // Stop small velocities
+                if length(vel) < minVelocity {
+                    vel = SIMD2<Float>(0.0, 0.0)
+                }
+                
+                ballData[i].x = pos.x
+                ballData[i].y = pos.y
+                ballData[i].z = vel.x
+                ballData[i].w = vel.y
+            }
+            
+            // Ball collisions
+            for i in 0..<15 {
+                for j in (i + 1)..<16 {
+                    let pos1 = SIMD2<Float>(ballData[i].x, ballData[i].y)
+                    let pos2 = SIMD2<Float>(ballData[j].x, ballData[j].y)
+                    let vel1 = SIMD2<Float>(ballData[i].z, ballData[i].w)
+                    let vel2 = SIMD2<Float>(ballData[j].z, ballData[j].w)
+                    
+                    // Skip if either ball is pocketed
+                    if vel1.x.isInfinite || vel2.x.isInfinite { continue }
+                    
+                    let delta = pos2 - pos1
+                    let dist = length(delta)
+                    
+                    if dist < 2.0 * ballRadius {
+                        let normal = normalize(delta)
+                        let relativeVel = vel2 - vel1
+                        let impulse = dot(relativeVel, normal)
+                        if impulse < 0.0 {  // Moving towards each other
+                            let restitution: Float = 0.85  // Reduced restitution
+                            let j = -(1.0 + restitution) * impulse / 2.0
+                            ballData[i].z += j * normal.x
+                            ballData[i].w += j * normal.y
+                            ballData[Int(j)].z -= j * normal.x
+                            ballData[Int(j)].w -= j * normal.y
+                            
+                            // Separate overlapping balls
+                            let overlap = 2.0 * ballRadius - dist
+                            ballData[i].x -= normal.x * overlap * 0.5
+                            ballData[i].y -= normal.y * overlap * 0.5
+                            ballData[Int(j)].x += normal.x * overlap * 0.5
+                            ballData[Int(j)].y += normal.y * overlap * 0.5
+                        }
+                    }
+                }
+            }
+        }
+        
         func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
         
         func draw(in view: MTKView) {
-            guard
-                let device = device,
-                let pipelineState = pipelineState,
-                let commandQueue = commandQueue,
-                let drawable = view.currentDrawable,
-                let commandBuffer = commandQueue.makeCommandBuffer(),
-                let renderPassDescriptor = view.currentRenderPassDescriptor,
-                let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor)
-            else {
-                return
-            }
+            guard let device = device,
+                  let pipelineState = pipelineState,
+                  let commandQueue = commandQueue,
+                  let drawable = view.currentDrawable,
+                  let commandBuffer = commandQueue.makeCommandBuffer(),
+                  let renderPassDescriptor = view.currentRenderPassDescriptor,
+                  let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor),
+                  let ballBuffer = ballBuffer,
+                  let cueBuffer = cueBuffer else { return }
             
+            let deltaTime = min(parent.time - lastFrameTime, 0.1)  // Cap delta time
             lastFrameTime = parent.time
-            encoder.setRenderPipelineState(pipelineState)
+            updatePhysics(deltaTime: deltaTime)
             
-            var resolution = float2(Float(view.drawableSize.width),
-                                    Float(view.drawableSize.height))
-            encoder.setFragmentBytes(&resolution, length: MemoryLayout<float2>.size, index: 0)
+            encoder.setRenderPipelineState(pipelineState)
+            var resolution = SIMD2<Float>(Float(view.drawableSize.width), Float(view.drawableSize.height))
+            encoder.setFragmentBytes(&resolution, length: MemoryLayout<SIMD2<Float>>.size, index: 0)
             encoder.setFragmentBytes(&lastFrameTime, length: MemoryLayout<Float>.size, index: 1)
+            encoder.setFragmentBuffer(ballBuffer, offset: 0, index: 2)
+            memcpy(cueBuffer.contents(), &cueOffset, MemoryLayout<Float>.stride)
+            encoder.setFragmentBuffer(cueBuffer, offset: 0, index: 3)
             
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
             encoder.endEncoding()
@@ -389,10 +501,12 @@ struct MetalView: UIViewRepresentable {
 // MARK: - ContentView
 struct ContentView: View {
     @State private var time: Float = 0
+    @State private var triggerHit: Bool = false
     
     var body: some View {
-        MetalView(time: $time)
+        MetalView(time: $time, triggerHit: $triggerHit)
             .ignoresSafeArea()
+            .gesture(TapGesture().onEnded { triggerHit = true })
             .onAppear {
                 let timer = Timer.scheduledTimer(withTimeInterval: 1/60, repeats: true) { _ in
                     time += 1/60
