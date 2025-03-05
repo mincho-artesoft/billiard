@@ -364,19 +364,21 @@ final class BilliardSimulation: ObservableObject {
     var balls: [BallData]
     private var ballBuffer: MTLBuffer
 
-    // Constants
+    // Table constraints
     private let ballRadius: Float = 0.47
     private let tableWidth: Float = 7.6
     private let tableLength: Float = 13.3
     private let pocketRadius: Float = 0.53
 
+    // Cue config
     private let cuePullSpeed: Float = 1.0
     private let cueStrikeSpeed: Float = 5.0
     private let maxCueOffset: Float = 2.0
-    public let maxTipOffset: Float = 0.47
+    public  let maxTipOffset: Float = 0.47
 
+    // Shot & physics
     private var hitTriggered: Bool = false
-    public var shooting: Bool = false
+    public  var shooting: Bool = false
     private var powerAtRelease: Float = 0.0
 
     private let friction: Float = 0.98
@@ -385,7 +387,7 @@ final class BilliardSimulation: ObservableObject {
     private let ballMass: Float = 1.0
     private let momentOfInertia: Float = 0.4 * 0.47 * 0.47
 
-    // Buffers used by the fragment shaders
+    // Buffers used by fragment shaders
     private var resolution = SIMD2<Float>(0,0)
     private var orbitUniformsBuffer: MTLBuffer
     private var behindCamPosBuffer: MTLBuffer
@@ -514,45 +516,52 @@ final class BilliardSimulation: ObservableObject {
                 let velocityScale = 0.5 + 1.5 * powerAtRelease
                 let hitOffset = cueTipOffset
                 
-                // Determine shot type based on hit position (cueTipOffset)
-                let hitY = hitOffset.y - 0.05 // Adjust for height offset
+                // Determine shot type based on hit position
+                let hitY = hitOffset.y - 0.05 // adjust for slight offset
                 let hitX = hitOffset.x
                 let hitDistance = simd_length(hitOffset)
                 let baseVel = Float(baseVelocity * velocityScale)
                 var velocity = SIMD2<Float>.zero
                 var spinAxis = SIMD3<Float>.zero
                 var spinMagnitude: Float = 0.0
-                
-                // Shot classification
-                if abs(hitX) < 0.05 && abs(hitY) < 0.05 { // Straight/Bank/Break Shot (center hit)
-                    velocity = SIMD2<Float>(0.0, baseVel) // Forward direction
-                    if powerAtRelease > 0.8 { // Break Shot (high power)
+
+                // Basic classification
+                if abs(hitX) < 0.05 && abs(hitY) < 0.05 {
+                    // Straight/Break shot
+                    velocity = SIMD2<Float>(0.0, baseVel)
+                    if powerAtRelease > 0.8 {
+                        // Break Shot
                         velocity *= 1.5
                     }
                 }
-                else if hitY < -0.2 { // Draw Shot (below center)
+                else if hitY < -0.2 {
+                    // Draw shot
                     velocity = SIMD2<Float>(0.0, baseVel * 0.8)
                     spinAxis = SIMD3<Float>(1.0, 0.0, 0.0) // Backspin
                     spinMagnitude = -hitY * velocityScale * 15.0
                 }
-                else if abs(hitX) > 0.2 && abs(hitY) < 0.1 { // Force Follow Stroke (sidespin)
+                else if abs(hitX) > 0.2 && abs(hitY) < 0.1 {
+                    // Force follow / side spin
                     velocity = SIMD2<Float>(0.0, baseVel * 0.9)
-                    spinAxis = SIMD3<Float>(0.0, 0.0, 1.0) // Sidespin
+                    spinAxis = SIMD3<Float>(0.0, 0.0, 1.0)
                     spinMagnitude = hitX * velocityScale * 10.0
                 }
-                else if hitY > 0.2 && abs(hitX) < 0.1 { // Jump Shot (above center)
+                else if hitY > 0.2 && abs(hitX) < 0.1 {
+                    // Jump shot (above center)
                     velocity = SIMD2<Float>(0.0, baseVel * 1.2)
-                    spinAxis = SIMD3<Float>(1.0, 0.0, 0.0) // Topspin for lift
+                    spinAxis = SIMD3<Float>(1.0, 0.0, 0.0)
                     spinMagnitude = hitY * velocityScale * 5.0
-                    // Simulate jump by adding slight upward velocity (not fully 3D, approximated)
-                    balls[0].velocity.y += 5.0 // Small upward kick
+                    // add a small upward kick
+                    balls[0].velocity.y += 5.0
                 }
-                else if hitY > 0.3 || abs(hitX) > 0.3 { // Masse' Shot (extreme offset)
+                else if hitY > 0.3 || abs(hitX) > 0.3 {
+                    // Masse
                     velocity = SIMD2<Float>(hitX * baseVel * 0.5, baseVel * 0.7)
-                    spinAxis = SIMD3<Float>(-hitY, hitX, 0.0) // Curve spin
+                    spinAxis = SIMD3<Float>(-hitY, hitX, 0.0)
                     spinMagnitude = hitDistance * velocityScale * 20.0
                 }
-                else { // Default (Plant/Double/Cushion Shot)
+                else {
+                    // Default / short offset
                     let hitNormal = normalize(SIMD3<Float>(-hitX, -hitY, 1.0))
                     velocity = SIMD2<Float>(hitNormal.x, hitNormal.z) * baseVel
                     spinAxis = SIMD3<Float>(-hitY, hitX, 0.0)
@@ -595,6 +604,7 @@ final class BilliardSimulation: ObservableObject {
         let dt = deltaTime / Float(subSteps)
 
         for _ in 0..<subSteps {
+            // Position & spin update
             for i in 0..<16 {
                 var pos = balls[i].position
                 var vel = balls[i].velocity
@@ -614,9 +624,11 @@ final class BilliardSimulation: ObservableObject {
                 }
 
                 if checkPocket(pos: pos) {
+                    // "Remove" ball
                     vel = SIMD2<Float>(.infinity, .infinity)
                     pos = SIMD2<Float>(0.0, 0.0)
                 } else {
+                    // Check cushion collisions
                     if abs(pos.x) > tableWidth - ballRadius {
                         pos.x = (pos.x > 0) ? tableWidth - ballRadius : -tableWidth + ballRadius
                         vel.x = -vel.x * restitution
@@ -645,6 +657,7 @@ final class BilliardSimulation: ObservableObject {
                 balls[i].quaternion = quat
             }
 
+            // Ball-ball collisions
             for i in 0..<15 {
                 for j in (i+1)..<16 {
                     var pos1 = balls[i].position
@@ -662,7 +675,6 @@ final class BilliardSimulation: ObservableObject {
                         let normal = delta / dist
                         let relativeVel = vel1 - vel2
                         let impulse = simd_dot(relativeVel, normal)
-
                         if impulse > 0.0 {
                             let impulseMag = -(1.0 + restitution) * impulse / (2.0 / ballMass)
                             vel1 += normal * (impulseMag / ballMass)
@@ -702,6 +714,7 @@ final class BilliardSimulation: ObservableObject {
             }
         }
 
+        // Update data in GPU buffer
         let ptr = ballBuffer.contents().bindMemory(to: SIMD8<Float>.self, capacity: 16)
         for i in 0..<16 {
             ptr[i] = SIMD8<Float>(
@@ -786,6 +799,54 @@ final class BilliardSimulation: ObservableObject {
         encoder.setRenderPipelineState(behindPipeline)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
     }
+
+    // NEW: Another pass, same logic as behindRenderPass
+    func encodeThirdRenderPass(encoder: MTLRenderCommandEncoder, viewSize: CGSize) {
+        // Exactly the same as behindRenderPass, but we'll keep them separate
+        self.resolution = SIMD2<Float>(Float(viewSize.width), Float(viewSize.height))
+
+        let whiteBall = balls[0]
+        var cameraPosition = SIMD3<Float>(0, 2.0, 0)
+        var cameraTarget   = SIMD3<Float>(0, 0.0, 0)
+        let speed = simd_length(whiteBall.velocity)
+        if speed < 0.01 {
+            cameraTarget = SIMD3<Float>(whiteBall.position.x, 0.05, whiteBall.position.y)
+            let zForward: Float = 2.5
+            cameraPosition = cameraTarget + SIMD3<Float>(0, 0.7, zForward)
+        } else {
+            let forward = simd_normalize(SIMD3<Float>(whiteBall.velocity.x, 0, whiteBall.velocity.y) + 0.000001)
+            cameraTarget = SIMD3<Float>(whiteBall.position.x, 0.05, whiteBall.position.y)
+            cameraPosition = cameraTarget - (forward * 3.0)
+            cameraPosition.y += 1.0
+        }
+
+        encoder.setFragmentBytes(&resolution, length: MemoryLayout<SIMD2<Float>>.size, index: 0)
+
+        let camPosPtr = behindCamPosBuffer.contents().bindMemory(to: SIMD3<Float>.self, capacity: 1)
+        camPosPtr[0] = cameraPosition
+        encoder.setFragmentBuffer(behindCamPosBuffer, offset: 0, index: 1)
+
+        let camTgtPtr = behindCamTargetBuffer.contents().bindMemory(to: SIMD3<Float>.self, capacity: 1)
+        camTgtPtr[0] = cameraTarget
+        encoder.setFragmentBuffer(behindCamTargetBuffer, offset: 0, index: 2)
+
+        encoder.setFragmentBuffer(ballBuffer, offset: 0, index: 3)
+
+        let cuePtr = cueOffsetBuffer.contents().bindMemory(to: Float.self, capacity: 1)
+        cuePtr[0] = self.cueOffset
+        encoder.setFragmentBuffer(cueOffsetBuffer, offset: 0, index: 4)
+
+        let showPtr = showCueBuffer.contents().bindMemory(to: Int32.self, capacity: 1)
+        showPtr[0] = self.showCueValue
+        encoder.setFragmentBuffer(showCueBuffer, offset: 0, index: 5)
+
+        let tipOffsetPtr = cueTipOffsetBuffer.contents().bindMemory(to: SIMD2<Float>.self, capacity: 1)
+        tipOffsetPtr[0] = self.cueTipOffset
+        encoder.setFragmentBuffer(cueTipOffsetBuffer, offset: 0, index: 6)
+
+        encoder.setRenderPipelineState(behindPipeline)
+        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+    }
 }
 
 // MARK: - Orbiting Camera View
@@ -808,7 +869,6 @@ struct OrbitingMetalView: UIViewRepresentable {
             else { return }
 
             parent.simulation.encodeOrbitRenderPass(encoder: encoder, viewSize: view.drawableSize)
-
             encoder.endEncoding()
             commandBuffer.present(drawable)
             commandBuffer.commit()
@@ -851,7 +911,49 @@ struct BehindBallMetalView: UIViewRepresentable {
             else { return }
 
             parent.simulation.encodeBehindRenderPass(encoder: encoder, viewSize: view.drawableSize)
+            encoder.endEncoding()
+            commandBuffer.present(drawable)
+            commandBuffer.commit()
+        }
+    }
 
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    func makeUIView(context: Context) -> MTKView {
+        let mtkView = MTKView(frame: .zero, device: simulation.device)
+        mtkView.delegate = context.coordinator
+        mtkView.colorPixelFormat = .bgra8Unorm
+        mtkView.clearColor = MTLClearColor(red: 0.05, green: 0.05, blue: 0.1, alpha: 1.0)
+        mtkView.preferredFramesPerSecond = 60
+        return mtkView
+    }
+
+    func updateUIView(_ uiView: MTKView, context: Context) {}
+}
+
+// MARK: - Third-Ball Camera View (NEW)
+struct ThirdBallMetalView: UIViewRepresentable {
+    @ObservedObject var simulation: BilliardSimulation
+
+    class Coordinator: NSObject, MTKViewDelegate {
+        var parent: ThirdBallMetalView
+        init(_ parent: ThirdBallMetalView) {
+            self.parent = parent
+        }
+
+        func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
+
+        func draw(in view: MTKView) {
+            guard let drawable = view.currentDrawable,
+                  let rpd = view.currentRenderPassDescriptor,
+                  let commandBuffer = parent.simulation.commandQueue.makeCommandBuffer(),
+                  let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: rpd)
+            else { return }
+
+            // Call our new pass
+            parent.simulation.encodeThirdRenderPass(encoder: encoder, viewSize: view.drawableSize)
             encoder.endEncoding()
             commandBuffer.present(drawable)
             commandBuffer.commit()
@@ -877,12 +979,16 @@ struct BehindBallMetalView: UIViewRepresentable {
 // MARK: - The SwiftUI ContentView
 struct ContentView: View {
     @StateObject private var simulation = BilliardSimulation()!
-    @State private var viewSize: CGSize = .zero
-    @State private var initialTouch: CGPoint? = nil
-    @State private var initialTipOffset: SIMD2<Float> = .zero
+    @State private var viewSizeBehind: CGSize = .zero
+    @State private var viewSizeThird: CGSize = .zero
+    @State private var initialTouchBehind: CGPoint? = nil
+    @State private var initialTouchThird: CGPoint? = nil
+    @State private var initialTipOffsetBehind: SIMD2<Float> = .zero
+    @State private var initialTipOffsetThird: SIMD2<Float> = .zero
 
     var body: some View {
-        ZStack(alignment: .bottomLeading) {
+        ZStack {
+            // Full-screen orbiting camera
             OrbitingMetalView(simulation: simulation)
                 .edgesIgnoringSafeArea(.all)
                 .overlay(
@@ -891,6 +997,7 @@ struct ContentView: View {
                         .padding(),
                     alignment: .top
                 )
+                // Let’s also allow pulling the cue here if you want:
                 .gesture(
                     DragGesture(minimumDistance: 0)
                         .onChanged { _ in
@@ -901,65 +1008,128 @@ struct ContentView: View {
                         }
                 )
 
-            BehindBallMetalView(simulation: simulation)
-                .frame(width: UIScreen.main.bounds.width / 2,
-                       height: UIScreen.main.bounds.width / 2)
-                .background(
-                    GeometryReader { geo in
-                        Color.clear
-                            .onAppear {
-                                viewSize = geo.size
+            // Place the two smaller views at the bottom:
+            VStack {
+                Spacer()
+                // Horizontal row: behind-ball view on the left, third-ball view on the right
+                HStack {
+                    // Behind-Ball camera
+                    BehindBallMetalView(simulation: simulation)
+                        .frame(width: UIScreen.main.bounds.width / 2,
+                               height: UIScreen.main.bounds.width / 2)
+                        .background(
+                            GeometryReader { geo in
+                                Color.clear
+                                    .onAppear {
+                                        viewSizeBehind = geo.size
+                                    }
+                                    .onChange(of: geo.size) { newSize in
+                                        viewSizeBehind = newSize
+                                    }
                             }
-                            .onChange(of: geo.size) { newSize in
-                                viewSize = newSize
-                            }
-                    }
-                )
-                .overlay(
-                    Text("Behind-Ball Camera")
-                        .foregroundColor(.white)
-                        .padding(),
-                    alignment: .top
-                )
-                .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .onChanged { value in
-                            if simulation.showCueValue == 1 && !simulation.shooting {
-                                if initialTouch == nil {
-                                    initialTouch = value.startLocation
-                                    initialTipOffset = simulation.cueTipOffset
+                        )
+                        .overlay(
+                            Text("Behind-Ball Camera")
+                                .foregroundColor(.white)
+                                .padding(),
+                            alignment: .top
+                        )
+                        // Drag on behind-ball view to set cue tip offset
+                        .gesture(
+                            DragGesture(minimumDistance: 0)
+                                .onChanged { value in
+                                    if simulation.showCueValue == 1 && !simulation.shooting {
+                                        if initialTouchBehind == nil {
+                                            initialTouchBehind = value.startLocation
+                                            initialTipOffsetBehind = simulation.cueTipOffset
+                                        }
+                                        guard let start = initialTouchBehind else { return }
+
+                                        let deltaX = Float(value.location.x - start.x)
+                                        let deltaY = Float(value.location.y - start.y)
+
+                                        // scale factor
+                                        let scaleFactor = simulation.maxTipOffset / Float(viewSizeBehind.height) * 2.0
+                                        let aspect = Float(viewSizeBehind.width / viewSizeBehind.height)
+
+                                        var newOffset = initialTipOffsetBehind + SIMD2<Float>(
+                                            deltaX * scaleFactor * aspect,
+                                            -deltaY * scaleFactor + 0.05
+                                        )
+                                        let offsetLength = simd_length(newOffset)
+                                        if offsetLength > simulation.maxTipOffset {
+                                            newOffset *= simulation.maxTipOffset / offsetLength
+                                        }
+                                        simulation.cueTipOffset = newOffset
+                                    }
                                 }
-                                
-                                guard let start = initialTouch else { return }
-                                
-                                let deltaX = Float(value.location.x - start.x)
-                                let deltaY = Float(value.location.y - start.y)
-                                
-                                let scaleFactor: Float = simulation.maxTipOffset / Float(viewSize.height) * 2.0
-                                let aspect = Float(viewSize.width / viewSize.height)
-                                
-                                var newOffset = initialTipOffset + SIMD2<Float>(
-                                    deltaX * scaleFactor * aspect,
-                                    -deltaY * scaleFactor + 0.05
-                                )
-                                
-                                let offsetLength = simd_length(newOffset)
-                                if offsetLength > simulation.maxTipOffset {
-                                    newOffset = newOffset * (simulation.maxTipOffset / offsetLength)
+                                .onEnded { _ in
+                                    initialTouchBehind = nil
+                                    initialTipOffsetBehind = .zero
                                 }
-                                
-                                simulation.cueTipOffset = newOffset
+                        )
+
+                    // Third-Ball camera (NEW)
+                    ThirdBallMetalView(simulation: simulation)
+                        .frame(width: UIScreen.main.bounds.width / 2,
+                               height: UIScreen.main.bounds.width / 2)
+                        .background(
+                            GeometryReader { geo in
+                                Color.clear
+                                    .onAppear {
+                                        viewSizeThird = geo.size
+                                    }
+                                    .onChange(of: geo.size) { newSize in
+                                        viewSizeThird = newSize
+                                    }
                             }
-                        }
-                        .onEnded { _ in
-                            initialTouch = nil
-                            initialTipOffset = .zero
-                        }
-                )
+                        )
+                        .overlay(
+                            Text("Third-Ball Camera")
+                                .foregroundColor(.white)
+                                .padding(),
+                            alignment: .top
+                        )
+                        // Same drag logic if you want the same cue offset control:
+                        .gesture(
+                            DragGesture(minimumDistance: 0)
+                                .onChanged { value in
+                                    if simulation.showCueValue == 1 && !simulation.shooting {
+                                        if initialTouchThird == nil {
+                                            initialTouchThird = value.startLocation
+                                            initialTipOffsetThird = simulation.cueTipOffset
+                                        }
+                                        guard let start = initialTouchThird else { return }
+
+                                        let deltaX = Float(value.location.x - start.x)
+                                        let deltaY = Float(value.location.y - start.y)
+
+                                        let scaleFactor = simulation.maxTipOffset / Float(viewSizeThird.height) * 2.0
+                                        let aspect = Float(viewSizeThird.width / viewSizeThird.height)
+
+                                        var newOffset = initialTipOffsetThird + SIMD2<Float>(
+                                            deltaX * scaleFactor * aspect,
+                                            -deltaY * scaleFactor + 0.05
+                                        )
+                                        let offsetLength = simd_length(newOffset)
+                                        if offsetLength > simulation.maxTipOffset {
+                                            newOffset *= simulation.maxTipOffset / offsetLength
+                                        }
+                                        simulation.cueTipOffset = newOffset
+                                    }
+                                }
+                                .onEnded { _ in
+                                    initialTouchThird = nil
+                                    initialTipOffsetThird = .zero
+                                }
+                        )
+                }
+                .padding(.bottom, 20)
+            }
         }
         .onAppear {
-            let timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0,
-                                             repeats: true) { _ in
+            // Basic game loop: update time & physics at 60 fps
+            let timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { _ in
                 simulation.time += 1.0/60.0
                 simulation.updatePhysics(deltaTime: 1.0/60.0)
             }
@@ -969,6 +1139,8 @@ struct ContentView: View {
 }
 
 // MARK: - SwiftUI Preview
-#Preview {
-    ContentView()
+struct ContentView_Previews: PreviewProvider {
+    static var previews: some View {
+        ContentView()
+    }
 }
