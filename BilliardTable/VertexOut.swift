@@ -508,7 +508,7 @@ final class BilliardSimulation: ObservableObject {
                 shooting = true
             }
             cueOffset -= cueStrikeSpeed * deltaTime
-            if cueOffset <= 0.0 {
+            if (cueOffset <= 0.0) {
                 cueOffset = 0.0
                 // Calculate hit direction and spin
                 let baseVelocity: Float = -30.0
@@ -834,6 +834,9 @@ struct BehindBallMetalView: UIViewRepresentable {
 // MARK: - The SwiftUI ContentView
 struct ContentView: View {
     @StateObject private var simulation = BilliardSimulation()!
+    @State private var viewSize: CGSize = .zero
+    @State private var initialTouch: CGPoint? = nil
+    @State private var initialTipOffset: SIMD2<Float> = .zero
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
@@ -858,6 +861,17 @@ struct ContentView: View {
             BehindBallMetalView(simulation: simulation)
                 .frame(width: UIScreen.main.bounds.width / 2,
                        height: UIScreen.main.bounds.width / 2)
+                .background(
+                    GeometryReader { geo in
+                        Color.clear
+                            .onAppear {
+                                viewSize = geo.size
+                            }
+                            .onChange(of: geo.size) { newSize in
+                                viewSize = newSize
+                            }
+                    }
+                )
                 .overlay(
                     Text("Behind-Ball Camera")
                         .foregroundColor(.white)
@@ -865,22 +879,43 @@ struct ContentView: View {
                     alignment: .top
                 )
                 .gesture(
-                    DragGesture()
+                    DragGesture(minimumDistance: 0)
                         .onChanged { value in
                             if simulation.showCueValue == 1 && !simulation.shooting {
-                                let sensitivity: Float = 0.005
-                                // Changed to move in same direction as drag (removed negative signs)
-                                let deltaX = Float(value.translation.width) * sensitivity
-                                let deltaY = Float(value.translation.height) * sensitivity
-                                // Allow free movement within ball radius
-                                var newOffset = simulation.cueTipOffset + SIMD2<Float>(deltaX, deltaY)
+                                if initialTouch == nil {
+                                    // Record initial touch position and tip offset
+                                    initialTouch = value.startLocation
+                                    initialTipOffset = simulation.cueTipOffset
+                                }
+                                
+                                guard let start = initialTouch else { return }
+                                
+                                // Calculate delta from initial touch point
+                                let deltaX = Float(value.location.x - start.x)
+                                let deltaY = Float(value.location.y - start.y)
+                                
+                                // Scale factor based on view size to reach maxTipOffset
+                                let scaleFactor: Float = simulation.maxTipOffset / Float(viewSize.height) * 2.0 // Adjust based on view height
+                                let aspect = Float(viewSize.width / viewSize.height)
+                                
+                                // Calculate new tip position relative to initial offset
+                                var newOffset = initialTipOffset + SIMD2<Float>(
+                                    deltaX * scaleFactor * aspect,  // Scale X movement
+                                    -deltaY * scaleFactor + 0.05     // Scale Y movement, add height offset
+                                )
+                                
                                 // Clamp to ball surface
                                 let offsetLength = simd_length(newOffset)
                                 if offsetLength > simulation.maxTipOffset {
                                     newOffset = newOffset * (simulation.maxTipOffset / offsetLength)
                                 }
+                                
                                 simulation.cueTipOffset = newOffset
                             }
+                        }
+                        .onEnded { _ in
+                            initialTouch = nil
+                            initialTipOffset = .zero
                         }
                 )
         }
