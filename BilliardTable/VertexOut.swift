@@ -392,6 +392,8 @@ final class BilliardSimulation: ObservableObject {
     private var orbitUniformsBuffer: MTLBuffer
     private var behindCamPosBuffer: MTLBuffer
     private var behindCamTargetBuffer: MTLBuffer
+    private var thirdCamPosBuffer: MTLBuffer
+    private var thirdCamTargetBuffer: MTLBuffer
     private var cueOffsetBuffer: MTLBuffer
     private var showCueBuffer: MTLBuffer
     private var cueTipOffsetBuffer: MTLBuffer
@@ -473,6 +475,8 @@ final class BilliardSimulation: ObservableObject {
         orbitUniformsBuffer     = device.makeBuffer(length: MemoryLayout<Float>.stride, options: .storageModeShared)!
         behindCamPosBuffer      = device.makeBuffer(length: MemoryLayout<SIMD3<Float>>.stride, options: .storageModeShared)!
         behindCamTargetBuffer   = device.makeBuffer(length: MemoryLayout<SIMD3<Float>>.stride, options: .storageModeShared)!
+        thirdCamPosBuffer    = device.makeBuffer(length: MemoryLayout<SIMD3<Float>>.stride, options: .storageModeShared)!
+        thirdCamTargetBuffer = device.makeBuffer(length: MemoryLayout<SIMD3<Float>>.stride, options: .storageModeShared)!
         cueOffsetBuffer         = device.makeBuffer(length: MemoryLayout<Float>.stride, options: .storageModeShared)!
         showCueBuffer           = device.makeBuffer(length: MemoryLayout<Int32>.stride, options: .storageModeShared)!
         cueTipOffsetBuffer      = device.makeBuffer(length: MemoryLayout<SIMD2<Float>>.stride, options: .storageModeShared)!
@@ -759,12 +763,13 @@ final class BilliardSimulation: ObservableObject {
 
         let whiteBall = balls[0]
         var cameraPosition = SIMD3<Float>(0, 2.0, 0)
-        var cameraTarget   = SIMD3<Float>(0, 0.0, 0)
+        var cameraTarget = SIMD3<Float>(0, 0.0, 0)
         let speed = simd_length(whiteBall.velocity)
+
         if speed < 0.01 {
             cameraTarget = SIMD3<Float>(whiteBall.position.x, 0.05, whiteBall.position.y)
-            let zForward: Float = 2.5
-            cameraPosition = cameraTarget + SIMD3<Float>(0, 0.7, zForward)
+            let stationaryDistance: Float = 2.5
+            cameraPosition = cameraTarget + SIMD3<Float>(0, 0.7, stationaryDistance)
         } else {
             let forward = simd_normalize(SIMD3<Float>(whiteBall.velocity.x, 0, whiteBall.velocity.y) + 0.000001)
             cameraTarget = SIMD3<Float>(whiteBall.position.x, 0.05, whiteBall.position.y)
@@ -774,26 +779,18 @@ final class BilliardSimulation: ObservableObject {
 
         encoder.setFragmentBytes(&resolution, length: MemoryLayout<SIMD2<Float>>.size, index: 0)
 
-        let camPosPtr = behindCamPosBuffer.contents().bindMemory(to: SIMD3<Float>.self, capacity: 1)
-        camPosPtr[0] = cameraPosition
+        behindCamPosBuffer.contents().bindMemory(to: SIMD3<Float>.self, capacity: 1)[0] = cameraPosition
         encoder.setFragmentBuffer(behindCamPosBuffer, offset: 0, index: 1)
 
-        let camTgtPtr = behindCamTargetBuffer.contents().bindMemory(to: SIMD3<Float>.self, capacity: 1)
-        camTgtPtr[0] = cameraTarget
+        behindCamTargetBuffer.contents().bindMemory(to: SIMD3<Float>.self, capacity: 1)[0] = cameraTarget
         encoder.setFragmentBuffer(behindCamTargetBuffer, offset: 0, index: 2)
 
         encoder.setFragmentBuffer(ballBuffer, offset: 0, index: 3)
-
-        let cuePtr = cueOffsetBuffer.contents().bindMemory(to: Float.self, capacity: 1)
-        cuePtr[0] = self.cueOffset
+        cueOffsetBuffer.contents().bindMemory(to: Float.self, capacity: 1)[0] = self.cueOffset
         encoder.setFragmentBuffer(cueOffsetBuffer, offset: 0, index: 4)
-
-        let showPtr = showCueBuffer.contents().bindMemory(to: Int32.self, capacity: 1)
-        showPtr[0] = self.showCueValue
+        showCueBuffer.contents().bindMemory(to: Int32.self, capacity: 1)[0] = self.showCueValue
         encoder.setFragmentBuffer(showCueBuffer, offset: 0, index: 5)
-
-        let tipOffsetPtr = cueTipOffsetBuffer.contents().bindMemory(to: SIMD2<Float>.self, capacity: 1)
-        tipOffsetPtr[0] = self.cueTipOffset
+        cueTipOffsetBuffer.contents().bindMemory(to: SIMD2<Float>.self, capacity: 1)[0] = self.cueTipOffset
         encoder.setFragmentBuffer(cueTipOffsetBuffer, offset: 0, index: 6)
 
         encoder.setRenderPipelineState(behindPipeline)
@@ -802,46 +799,40 @@ final class BilliardSimulation: ObservableObject {
 
     // NEW: Another pass, same logic as behindRenderPass
     func encodeThirdRenderPass(encoder: MTLRenderCommandEncoder, viewSize: CGSize) {
-        // Exactly the same as behindRenderPass, but we'll keep them separate
         self.resolution = SIMD2<Float>(Float(viewSize.width), Float(viewSize.height))
 
         let whiteBall = balls[0]
         var cameraPosition = SIMD3<Float>(0, 2.0, 0)
-        var cameraTarget   = SIMD3<Float>(0, 0.0, 0)
+        var cameraTarget = SIMD3<Float>(0, 0.0, 0)
         let speed = simd_length(whiteBall.velocity)
+
         if speed < 0.01 {
             cameraTarget = SIMD3<Float>(whiteBall.position.x, 0.05, whiteBall.position.y)
-            let zForward: Float = 2.5
-            cameraPosition = cameraTarget + SIMD3<Float>(0, 0.7, zForward)
+            let stationaryDistance: Float = 7.0
+            cameraPosition = cameraTarget + SIMD3<Float>(0, 0.7, stationaryDistance)
         } else {
             let forward = simd_normalize(SIMD3<Float>(whiteBall.velocity.x, 0, whiteBall.velocity.y) + 0.000001)
             cameraTarget = SIMD3<Float>(whiteBall.position.x, 0.05, whiteBall.position.y)
-            cameraPosition = cameraTarget - (forward * 3.0)
+            let movingDistance: Float = 8.0
+            cameraPosition = cameraTarget - (forward * movingDistance)
             cameraPosition.y += 1.0
         }
 
         encoder.setFragmentBytes(&resolution, length: MemoryLayout<SIMD2<Float>>.size, index: 0)
 
-        let camPosPtr = behindCamPosBuffer.contents().bindMemory(to: SIMD3<Float>.self, capacity: 1)
-        camPosPtr[0] = cameraPosition
-        encoder.setFragmentBuffer(behindCamPosBuffer, offset: 0, index: 1)
+        // ✅ Using the new third-view-specific buffers
+        thirdCamPosBuffer.contents().bindMemory(to: SIMD3<Float>.self, capacity: 1)[0] = cameraPosition
+        encoder.setFragmentBuffer(thirdCamPosBuffer, offset: 0, index: 1)
 
-        let camTgtPtr = behindCamTargetBuffer.contents().bindMemory(to: SIMD3<Float>.self, capacity: 1)
-        camTgtPtr[0] = cameraTarget
-        encoder.setFragmentBuffer(behindCamTargetBuffer, offset: 0, index: 2)
+        thirdCamTargetBuffer.contents().bindMemory(to: SIMD3<Float>.self, capacity: 1)[0] = cameraTarget
+        encoder.setFragmentBuffer(thirdCamTargetBuffer, offset: 0, index: 2)
 
         encoder.setFragmentBuffer(ballBuffer, offset: 0, index: 3)
-
-        let cuePtr = cueOffsetBuffer.contents().bindMemory(to: Float.self, capacity: 1)
-        cuePtr[0] = self.cueOffset
+        cueOffsetBuffer.contents().bindMemory(to: Float.self, capacity: 1)[0] = self.cueOffset
         encoder.setFragmentBuffer(cueOffsetBuffer, offset: 0, index: 4)
-
-        let showPtr = showCueBuffer.contents().bindMemory(to: Int32.self, capacity: 1)
-        showPtr[0] = self.showCueValue
+        showCueBuffer.contents().bindMemory(to: Int32.self, capacity: 1)[0] = self.showCueValue
         encoder.setFragmentBuffer(showCueBuffer, offset: 0, index: 5)
-
-        let tipOffsetPtr = cueTipOffsetBuffer.contents().bindMemory(to: SIMD2<Float>.self, capacity: 1)
-        tipOffsetPtr[0] = self.cueTipOffset
+        cueTipOffsetBuffer.contents().bindMemory(to: SIMD2<Float>.self, capacity: 1)[0] = self.cueTipOffset
         encoder.setFragmentBuffer(cueTipOffsetBuffer, offset: 0, index: 6)
 
         encoder.setRenderPipelineState(behindPipeline)
@@ -933,7 +924,7 @@ struct BehindBallMetalView: UIViewRepresentable {
     func updateUIView(_ uiView: MTKView, context: Context) {}
 }
 
-// MARK: - Third-Ball Camera View (NEW)
+// MARK: - Third-Ball Camera View (Adjusted to see full cue stick)
 struct ThirdBallMetalView: UIViewRepresentable {
     @ObservedObject var simulation: BilliardSimulation
 
@@ -952,7 +943,7 @@ struct ThirdBallMetalView: UIViewRepresentable {
                   let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: rpd)
             else { return }
 
-            // Call our new pass
+            // Adjusted camera positioning pass
             parent.simulation.encodeThirdRenderPass(encoder: encoder, viewSize: view.drawableSize)
             encoder.endEncoding()
             commandBuffer.present(drawable)
@@ -1070,15 +1061,15 @@ struct ContentView: View {
                         )
 
                     // Third-Ball camera (NEW)
+                    // Within ContentView body:
+
                     ThirdBallMetalView(simulation: simulation)
                         .frame(width: UIScreen.main.bounds.width / 2,
                                height: UIScreen.main.bounds.width / 2)
                         .background(
                             GeometryReader { geo in
                                 Color.clear
-                                    .onAppear {
-                                        viewSizeThird = geo.size
-                                    }
+                                    .onAppear { viewSizeThird = geo.size }
                                     .onChange(of: geo.size) { newSize in
                                         viewSizeThird = newSize
                                     }
@@ -1090,7 +1081,6 @@ struct ContentView: View {
                                 .padding(),
                             alignment: .top
                         )
-                        // Same drag logic if you want the same cue offset control:
                         .gesture(
                             DragGesture(minimumDistance: 0)
                                 .onChanged { value in
