@@ -90,7 +90,7 @@ void ballHit(float3 ro, float3 rd, thread float &dist, thread float3 &normal, th
 }
 
 float3 showScene(float3 ro, float3 rd,
-                 float time, float cueOffset, float2 cueTipOffset, float cueVerticalOffset,
+                 float time, float cueOffset, float2 cueTipOffset,
                  constant Ball* balls [[buffer(2)]],
                  int cueVisible, float cueAngle) {
     const float hbLen = 8.0;
@@ -126,7 +126,7 @@ float3 showScene(float3 ro, float3 rd,
         dTable = smoothMax(dTable, 0.53 - pocketDist, 0.01);
 
         float3 pc = p - float3(balls[0].position.x, 0.05, balls[0].position.y);
-        pc.y -= 0.05 + cueVerticalOffset;  // Adjust cue position vertically
+        pc.y -= 0.05;
         float baseAngle = sin(time * 0.5) * 0.1;
         pc.xz = -rot2D(pc.xz, baseAngle + cueAngle);
         float cueLength = 2.5;
@@ -286,8 +286,7 @@ fragment float4 fragmentShader(VertexOut in [[stage_in]],
     const float fov = 0.8;
     float3 rd = normalize(vd + right * uv.x * fov + up * uv.y * fov);
 
-    float cueVerticalOffset = 0.0;  // Placeholder, not used in orbit view
-    float3 col = showScene(ro, rd, time, cueOffset, cueTipOffset, cueVerticalOffset, balls, cueVisible, cueAngle);
+    float3 col = showScene(ro, rd, time, cueOffset, cueTipOffset, balls, cueVisible, cueAngle);
     return float4(col, 1.0);
 }
 
@@ -313,9 +312,8 @@ fragment float4 behindBallFragmentShader(VertexOut in [[stage_in]],
     const float fov = 0.8;
     float3 rd = normalize(vd + right * uv.x * fov + up * uv.y * fov);
 
-    float cueVerticalOffset = 0.0;  // Placeholder, not used in behind-ball view
     float timeDummy = 0.0;
-    float3 col = showScene(ro, rd, timeDummy, cueOffset, cueTipOffset, cueVerticalOffset, balls, cueVisible, cueAngle);
+    float3 col = showScene(ro, rd, timeDummy, cueOffset, cueTipOffset, balls, cueVisible, cueAngle);
     return float4(col, 1.0);
 }
 """
@@ -354,7 +352,6 @@ final class BilliardSimulation: ObservableObject {
     var cueOffset: Float = 0.0
     var cueTipOffset: SIMD2<Float> = .zero
     var cueAngle: Float = 0.0
-    var cueVerticalOffset: Float = 0.0  // New property for vertical movement
     var showCueValue: Int32 = 1
 
     var balls: [BallData]
@@ -369,18 +366,16 @@ final class BilliardSimulation: ObservableObject {
     private let cueStrikeSpeed: Float = 5.0
     private let maxCueOffset: Float = 2.0
     public  let maxTipOffset: Float = 0.47
-    internal let maxVerticalOffset: Float = 0.5  // Maximum vertical offset for cue tilt
 
     private var hitTriggered: Bool = false
     public  var shooting: Bool = false
     private var powerAtRelease: Float = 0.0
 
-    private let friction: Float = 0.97  // Slightly increased for longer travel
-    private let restitution: Float = 0.75  // Maintained for realism
-    private let minVelocity: Float = 0.005  // Kept for fine control
+    private let friction: Float = 0.96  // Reduced for realism (0.95–0.97 for pool)
+    private let restitution: Float = 0.75  // Reduced for realism (0.7–0.8 for pool)
+    private let minVelocity: Float = 0.005  // Lowered for finer control
     private let ballMass: Float = 1.0
     private let momentOfInertia: Float = 0.4 * 0.47 * 0.47
-    private let spinEffectFactor: Float = 0.05  // Tuned for minimal swerve before rails
 
     private var resolution = SIMD2<Float>(0,0)
     private var orbitUniformsBuffer: MTLBuffer
@@ -392,7 +387,6 @@ final class BilliardSimulation: ObservableObject {
     private var showCueBuffer: MTLBuffer
     private var cueTipOffsetBuffer: MTLBuffer
     private var cueAngleBuffer: MTLBuffer
-    private var cueVerticalOffsetBuffer: MTLBuffer  // New buffer for vertical offset
 
     init?() {
         guard let dev = MTLCreateSystemDefaultDevice(),
@@ -460,8 +454,8 @@ final class BilliardSimulation: ObservableObject {
             ballShaderData[i] = SIMD8<Float>(
                 balls[i].position.x,  balls[i].position.y,
                 balls[i].velocity.x,  balls[i].velocity.y,
-                balls[i].quaternion.x, balls[i].quaternion.y,
-                balls[i].quaternion.z, balls[i].quaternion.w
+                balls[i].quaternion.x,balls[i].quaternion.y,
+                balls[i].quaternion.z,balls[i].quaternion.w
             )
         }
         self.ballBuffer = device.makeBuffer(bytes: ballShaderData,
@@ -477,7 +471,6 @@ final class BilliardSimulation: ObservableObject {
         showCueBuffer           = device.makeBuffer(length: MemoryLayout<Int32>.stride, options: .storageModeShared)!
         cueTipOffsetBuffer      = device.makeBuffer(length: MemoryLayout<SIMD2<Float>>.stride, options: .storageModeShared)!
         cueAngleBuffer          = device.makeBuffer(length: MemoryLayout<Float>.stride, options: .storageModeShared)!
-        cueVerticalOffsetBuffer = device.makeBuffer(length: MemoryLayout<Float>.stride, options: .storageModeShared)!  // New buffer
     }
 
     private func checkPocket(pos: SIMD2<Float>) -> Bool {
@@ -512,11 +505,11 @@ final class BilliardSimulation: ObservableObject {
             cueOffset -= cueStrikeSpeed * deltaTime
             if (cueOffset <= 0.0) {
                 cueOffset = 0.0
-                let baseVelocity: Float = -40.0  // Maintained for power
-                let velocityScale = 0.3 + 1.7 * powerAtRelease  // Maintained for realistic power range
+                let baseVelocity: Float = -20.0  // Reduced for realism
+                let velocityScale = 0.3 + 1.7 * powerAtRelease  // Adjusted for realistic power range
                 let hitOffset = cueTipOffset
                 
-                let angleRad = cueAngle  // Maintained for direction
+                let angleRad = -cueAngle
                 let cosA = cos(angleRad)
                 let sinA = sin(angleRad)
                 let effectiveHitOffset = SIMD2<Float>(
@@ -524,7 +517,7 @@ final class BilliardSimulation: ObservableObject {
                     hitOffset.x * sinA + hitOffset.y * cosA
                 )
                 
-                let hitY = effectiveHitOffset.y - 0.05 + cueVerticalOffset  // Adjust hitY with vertical offset
+                let hitY = effectiveHitOffset.y - 0.05  // Slight offset for cue tip
                 let hitX = effectiveHitOffset.x
                 let hitDistance = simd_length(effectiveHitOffset)
                 let baseVel = Float(baseVelocity * velocityScale)
@@ -532,28 +525,14 @@ final class BilliardSimulation: ObservableObject {
                 var spinAxis = SIMD3<Float>.zero
                 var spinMagnitude: Float = 0.0
 
-                // Center Hit (with optional right sidespin from cueTipOffset)
-                if abs(hitX) < 0.1 && abs(hitY) < 0.1 {  // Expanded threshold for smoother transition
+                // Straight Shot (center hit, no spin)
+                if abs(hitX) < 0.05 && abs(hitY) < 0.05 {
                     velocity = SIMD2<Float>(0.0, baseVel)
                     if powerAtRelease > 0.8 {  // High power for break-like shots
                         velocity *= 2.0  // Increased for break shot realism
                     }
-                    // Apply right sidespin if cueTipOffset.x > 0, even for near-center hits
-                    if hitOffset.x > 0.0 {
-                        spinAxis = SIMD3<Float>(0.0, 0.0, 1.0)  // Right sidespin
-                        spinMagnitude = hitOffset.x * velocityScale * 15.0  // Moderate right spin
-                    } else if hitOffset.x < 0.0 {
-                        spinAxis = SIMD3<Float>(0.0, 0.0, -1.0)  // Left sidespin
-                        spinMagnitude = -hitOffset.x * velocityScale * 15.0  // Moderate left spin
-                    }
-                    // Apply vertical spin based on cueVerticalOffset
-                    if cueVerticalOffset > 0.0 {
-                        spinAxis.y = 1.0  // Topspin
-                        spinMagnitude += cueVerticalOffset * velocityScale * 10.0  // Moderate topspin
-                    } else if cueVerticalOffset < 0.0 {
-                        spinAxis.y = -1.0  // Backspin
-                        spinMagnitude += -cueVerticalOffset * velocityScale * 10.0  // Moderate backspin
-                    }
+                    spinAxis = .zero  // No spin for pure straight shot
+                    spinMagnitude = 0.0
                 }
                 // Draw Shot (low hit for backspin)
                 else if hitY < -0.2 {
@@ -562,60 +541,30 @@ final class BilliardSimulation: ObservableObject {
                     spinMagnitude = -hitY * velocityScale * 30.0  // Increased for stronger backspin
                 }
                 // Force Follow/Side Spin (side hit for sidespin)
-                else if abs(hitX) > 0.1 && abs(hitY) < 0.1 {  // Adjusted threshold for sidespin
+                else if abs(hitX) > 0.2 && abs(hitY) < 0.1 {
                     velocity = SIMD2<Float>(0.0, baseVel * 0.9)
-                    spinAxis = SIMD3<Float>(0.0, 0.0, 1.0)  // Sidespin (right if hitX > 0, left if hitX < 0)
-                    spinMagnitude = abs(hitX) * velocityScale * 20.0  // Increased for realistic follow
-                    // Apply vertical spin based on cueVerticalOffset
-                    if cueVerticalOffset > 0.0 {
-                        spinAxis.y = 1.0  // Topspin
-                        spinMagnitude += cueVerticalOffset * velocityScale * 10.0  // Moderate topspin
-                    } else if cueVerticalOffset < 0.0 {
-                        spinAxis.y = -1.0  // Backspin
-                        spinMagnitude += -cueVerticalOffset * velocityScale * 10.0  // Moderate backspin
-                    }
+                    spinAxis = SIMD3<Float>(0.0, 0.0, 1.0)  // Sidespin
+                    spinMagnitude = hitX * velocityScale * 20.0  // Increased for realistic follow
                 }
                 // Jump Shot (high hit with upward force)
-                else if hitY > 0.1 && abs(hitX) < 0.1 {  // Adjusted threshold for smoother transition
+                else if hitY > 0.2 && abs(hitX) < 0.1 {
                     velocity = SIMD2<Float>(0.0, baseVel * 1.2)
                     spinAxis = SIMD3<Float>(1.0, 0.0, 0.0)  // Slight backspin to control landing
                     spinMagnitude = hitY * velocityScale * 10.0
                     balls[0].velocity.y += 10.0  // Increased jump height
-                    // Apply vertical spin based on cueVerticalOffset
-                    if cueVerticalOffset > 0.0 {
-                        spinAxis.y = 1.0  // Topspin
-                        spinMagnitude += cueVerticalOffset * velocityScale * 10.0  // Moderate topspin
-                    }
                 }
                 // Masse Shot (extreme offset for curve)
                 else if hitY > 0.3 || abs(hitX) > 0.3 {
                     velocity = SIMD2<Float>(hitX * baseVel * 0.5, baseVel * 0.7)
                     spinAxis = SIMD3<Float>(-hitY, hitX, 0.0)  // Curve based on offset
                     spinMagnitude = hitDistance * velocityScale * 40.0  // Stronger curve for masse
-                    // Apply vertical spin based on cueVerticalOffset
-                    if cueVerticalOffset > 0.0 {
-                        spinAxis.y = 1.0  // Topspin
-                        spinMagnitude += cueVerticalOffset * velocityScale * 10.0  // Moderate topspin
-                    } else if cueVerticalOffset < 0.0 {
-                        spinAxis.y = -1.0  // Backspin
-                        spinMagnitude += -cueVerticalOffset * velocityScale * 10.0  // Moderate backspin
-                    }
                 }
-                // Default/Short Offset (general angled shot, including topspin/sidespin)
+                // Default/Short Offset (general angled shot)
                 else {
                     let hitNormal = normalize(SIMD3<Float>(-hitX, -hitY, 1.0))
                     velocity = SIMD2<Float>(hitNormal.x, hitNormal.z) * baseVel
-                    // Apply both topspin and sidespin based on hit position
-                    spinAxis = SIMD3<Float>(-hitY, hitX, 0.0)  // Topspin (y) and sidespin (x)
+                    spinAxis = SIMD3<Float>(-hitY, hitX, 0.0)
                     spinMagnitude = hitDistance * velocityScale * 15.0  // Moderate spin for angled shots
-                    // Apply vertical spin based on cueVerticalOffset
-                    if cueVerticalOffset > 0.0 {
-                        spinAxis.y = 1.0  // Topspin
-                        spinMagnitude += cueVerticalOffset * velocityScale * 10.0  // Moderate topspin
-                    } else if cueVerticalOffset < 0.0 {
-                        spinAxis.y = -1.0  // Backspin
-                        spinMagnitude += -cueVerticalOffset * velocityScale * 10.0  // Moderate backspin
-                    }
                 }
 
                 // Rotate velocity to match cue angle
@@ -667,7 +616,7 @@ final class BilliardSimulation: ObservableObject {
 
                 pos += vel * dt
 
-                // Apply minimal swerve due to spin (before rails)
+                // Apply spin to velocity for realistic motion
                 let angVel3D = SIMD3<Float>(0.0, vel.x / ballRadius, -vel.y / ballRadius)
                 let angSpeed = simd_length(angVel3D)
                 if angSpeed > 0.0 {
@@ -675,8 +624,8 @@ final class BilliardSimulation: ObservableObject {
                     let dq = quaternionFromAxisAngle(axis, angSpeed * dt)
                     quat = quaternionMultiply(dq, quat)
                     quat = simd_normalize(quat)
-                    // Minimal swerve effect (negligible before rails)
-                    let spinEffect = SIMD2<Float>(-quat.z * angSpeed * spinEffectFactor, quat.y * angSpeed * spinEffectFactor)
+                    // Apply spin-induced velocity (simplified for pool physics)
+                    let spinEffect = SIMD2<Float>(-quat.z * angSpeed * 0.1, quat.y * angSpeed * 0.1)  // Adjust for realism
                     vel += spinEffect * dt
                 }
 
@@ -684,18 +633,13 @@ final class BilliardSimulation: ObservableObject {
                     vel = SIMD2<Float>(.infinity, .infinity)
                     pos = SIMD2<Float>(0.0, 0.0)
                 } else {
-                    // Rail collisions with spin-induced rebound
+                    // Rail collisions with realistic angles and restitution
                     if abs(pos.x) > tableWidth - ballRadius {
                         pos.x = (pos.x > 0) ? tableWidth - ballRadius : -tableWidth + ballRadius
                         let incidentAngle = atan2(vel.y, vel.x)
                         let normalAngle = (pos.x > 0) ? 0.0 : Float.pi
+                        let reflectionAngle = 2.0 * normalAngle - incidentAngle
                         let speed = simd_length(vel)
-                        
-                        // Apply spin-induced throw for sidespin
-                        let spinZ = quat.z  // Z-component of quaternion indicates sidespin (left/right)
-                        let spinEffectAngle = spinZ * 0.5  // Scale spin effect on rebound angle (tunable)
-                        let reflectionAngle = 2.0 * normalAngle - incidentAngle + ((pos.x > 0) ? -spinEffectAngle : spinEffectAngle)
-                        
                         vel = SIMD2<Float>(cos(reflectionAngle), sin(reflectionAngle)) * speed * restitution
                         let angVel = vel.y / ballRadius
                         let dq = quaternionFromAxisAngle(SIMD3<Float>(0, 0, 1), angVel * dt)
@@ -706,13 +650,8 @@ final class BilliardSimulation: ObservableObject {
                         pos.y = (pos.y > 0) ? tableLength - ballRadius : -tableLength + ballRadius
                         let incidentAngle = atan2(vel.x, vel.y)
                         let normalAngle = (pos.y > 0) ? Float.pi / 2.0 : -Float.pi / 2.0
+                        let reflectionAngle = 2.0 * normalAngle - incidentAngle
                         let speed = simd_length(vel)
-                        
-                        // Apply spin-induced throw for sidespin
-                        let spinZ = quat.z  // Z-component of quaternion indicates sidespin (left/right)
-                        let spinEffectAngle = spinZ * 0.5  // Scale spin effect on rebound angle (tunable)
-                        let reflectionAngle = 2.0 * normalAngle - incidentAngle + ((pos.y > 0) ? -spinEffectAngle : spinEffectAngle)
-                        
                         vel = SIMD2<Float>(-sin(reflectionAngle), cos(reflectionAngle)) * speed * restitution
                         let angVel = -vel.x / ballRadius
                         let dq = quaternionFromAxisAngle(SIMD3<Float>(0, 1, 0), angVel * dt)
@@ -731,7 +670,7 @@ final class BilliardSimulation: ObservableObject {
                 balls[i].quaternion = quat
             }
 
-            // Ball-ball collisions with realistic angles and energy loss (unchanged)
+            // Ball-ball collisions with realistic angles and energy loss
             for i in 0..<15 {
                 for j in (i+1)..<16 {
                     var pos1 = balls[i].position
@@ -826,10 +765,6 @@ final class BilliardSimulation: ObservableObject {
         anglePtr[0] = self.cueAngle
         encoder.setFragmentBuffer(cueAngleBuffer, offset: 0, index: 6)
 
-        let verticalOffsetPtr = cueVerticalOffsetBuffer.contents().bindMemory(to: Float.self, capacity: 1)
-        verticalOffsetPtr[0] = self.cueVerticalOffset
-        encoder.setFragmentBuffer(cueVerticalOffsetBuffer, offset: 0, index: 7)  // New buffer index
-
         encoder.setRenderPipelineState(orbitPipeline)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
     }
@@ -879,9 +814,6 @@ final class BilliardSimulation: ObservableObject {
         encoder.setFragmentBuffer(cueTipOffsetBuffer, offset: 0, index: 6)
         cueAngleBuffer.contents().bindMemory(to: Float.self, capacity: 1)[0] = self.cueAngle
         encoder.setFragmentBuffer(cueAngleBuffer, offset: 0, index: 7)
-        let verticalOffsetPtr = cueVerticalOffsetBuffer.contents().bindMemory(to: Float.self, capacity: 1)
-        verticalOffsetPtr[0] = self.cueVerticalOffset
-        encoder.setFragmentBuffer(cueVerticalOffsetBuffer, offset: 0, index: 8)  // New buffer index
 
         encoder.setRenderPipelineState(behindPipeline)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
@@ -933,9 +865,6 @@ final class BilliardSimulation: ObservableObject {
         encoder.setFragmentBuffer(cueTipOffsetBuffer, offset: 0, index: 6)
         cueAngleBuffer.contents().bindMemory(to: Float.self, capacity: 1)[0] = self.cueAngle
         encoder.setFragmentBuffer(cueAngleBuffer, offset: 0, index: 7)
-        let verticalOffsetPtr = cueVerticalOffsetBuffer.contents().bindMemory(to: Float.self, capacity: 1)
-        verticalOffsetPtr[0] = self.cueVerticalOffset
-        encoder.setFragmentBuffer(cueVerticalOffsetBuffer, offset: 0, index: 8)  // New buffer index
 
         encoder.setRenderPipelineState(behindPipeline)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
@@ -1077,7 +1006,6 @@ struct ContentView: View {
     @State private var initialTouchThird: CGPoint? = nil
     @State private var initialTipOffsetBehind: SIMD2<Float> = .zero
     @State private var initialCueAngleThird: Float = 0.0
-    @State private var initialVerticalOffsetThird: Float = 0.0
 
     var body: some View {
         ZStack {
@@ -1164,7 +1092,6 @@ struct ContentView: View {
                                     .onAppear { viewSizeThird = geo.size }
                                     .onChange(of: geo.size) { newSize in
                                         viewSizeThird = newSize
-                                        print("Third view size updated to: \(newSize)")  // Debug logging
                                     }
                             }
                         )
@@ -1181,28 +1108,18 @@ struct ContentView: View {
                                         if initialTouchThird == nil {
                                             initialTouchThird = value.startLocation
                                             initialCueAngleThird = simulation.cueAngle
-                                            initialVerticalOffsetThird = simulation.cueVerticalOffset
                                         }
                                         guard let start = initialTouchThird else { return }
 
                                         let deltaX = Float(value.location.x - start.x)
-                                        let deltaY = Float(value.location.y - start.y)
-
-                                        let horizontalSensitivity: Float = 0.01
-                                        let verticalSensitivity: Float = 0.02  // Increased for more noticeable vertical movement
-                                        let newAngle = initialCueAngleThird + deltaX * horizontalSensitivity
-                                        let newVerticalOffset = initialVerticalOffsetThird + deltaY * verticalSensitivity
-
+                                        let sensitivity: Float = 0.01
+                                        let newAngle = initialCueAngleThird + deltaX * sensitivity
                                         simulation.cueAngle = max(-Float.pi / 2, min(Float.pi / 2, newAngle))
-                                        simulation.cueVerticalOffset = max(-simulation.maxVerticalOffset, min(simulation.maxVerticalOffset, newVerticalOffset))
-                                        
-                                        print("Dragging: deltaX = \(deltaX), deltaY = \(deltaY), newAngle = \(newAngle), newVerticalOffset = \(newVerticalOffset)")  // Debug logging
                                     }
                                 }
                                 .onEnded { _ in
                                     initialTouchThird = nil
                                     initialCueAngleThird = 0.0
-                                    initialVerticalOffsetThird = 0.0
                                 }
                         )
                 }
