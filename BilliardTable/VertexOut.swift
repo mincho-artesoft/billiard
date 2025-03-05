@@ -2,7 +2,7 @@ import SwiftUI
 import MetalKit
 import simd
 
-// MARK: - Metal Shaders
+// MARK: - Metal Shaders (unchanged)
 let metalShader = """
 #include <metal_stdlib>
 using namespace metal;
@@ -357,7 +357,7 @@ final class BilliardSimulation: ObservableObject {
     var time: Float = 0.0
     var isTouching: Bool = false  // Cue pulling
     var cueOffset: Float = 0.0
-    var cueTipOffset: SIMD2<Float> = .zero  // New: x, y offset of cue tip
+    var cueTipOffset: SIMD2<Float> = .zero  // x, y offset of cue tip
     var showCueValue: Int32 = 1   // 1 => show, 0 => hide
 
     // Balls
@@ -510,16 +510,59 @@ final class BilliardSimulation: ObservableObject {
             cueOffset -= cueStrikeSpeed * deltaTime
             if (cueOffset <= 0.0) {
                 cueOffset = 0.0
-                // Calculate hit direction and spin
                 let baseVelocity: Float = -30.0
                 let velocityScale = 0.5 + 1.5 * powerAtRelease
-                let hitNormal = normalize(SIMD3<Float>(-cueTipOffset.x, -cueTipOffset.y, 1.0))
-                let velocity = SIMD2<Float>(hitNormal.x, hitNormal.z) * Float(baseVelocity * velocityScale)
-                balls[0].velocity = velocity  // This is SIMD2<Float>, matching BallData.velocity
+                let hitOffset = cueTipOffset
+                
+                // Determine shot type based on hit position (cueTipOffset)
+                let hitY = hitOffset.y - 0.05 // Adjust for height offset
+                let hitX = hitOffset.x
+                let hitDistance = simd_length(hitOffset)
+                let baseVel = Float(baseVelocity * velocityScale)
+                var velocity = SIMD2<Float>.zero
+                var spinAxis = SIMD3<Float>.zero
+                var spinMagnitude: Float = 0.0
+                
+                // Shot classification
+                if abs(hitX) < 0.05 && abs(hitY) < 0.05 { // Straight/Bank/Break Shot (center hit)
+                    velocity = SIMD2<Float>(0.0, baseVel) // Forward direction
+                    if powerAtRelease > 0.8 { // Break Shot (high power)
+                        velocity *= 1.5
+                    }
+                }
+                else if hitY < -0.2 { // Draw Shot (below center)
+                    velocity = SIMD2<Float>(0.0, baseVel * 0.8)
+                    spinAxis = SIMD3<Float>(1.0, 0.0, 0.0) // Backspin
+                    spinMagnitude = -hitY * velocityScale * 15.0
+                }
+                else if abs(hitX) > 0.2 && abs(hitY) < 0.1 { // Force Follow Stroke (sidespin)
+                    velocity = SIMD2<Float>(0.0, baseVel * 0.9)
+                    spinAxis = SIMD3<Float>(0.0, 0.0, 1.0) // Sidespin
+                    spinMagnitude = hitX * velocityScale * 10.0
+                }
+                else if hitY > 0.2 && abs(hitX) < 0.1 { // Jump Shot (above center)
+                    velocity = SIMD2<Float>(0.0, baseVel * 1.2)
+                    spinAxis = SIMD3<Float>(1.0, 0.0, 0.0) // Topspin for lift
+                    spinMagnitude = hitY * velocityScale * 5.0
+                    // Simulate jump by adding slight upward velocity (not fully 3D, approximated)
+                    balls[0].velocity.y += 5.0 // Small upward kick
+                }
+                else if hitY > 0.3 || abs(hitX) > 0.3 { // Masse' Shot (extreme offset)
+                    velocity = SIMD2<Float>(hitX * baseVel * 0.5, baseVel * 0.7)
+                    spinAxis = SIMD3<Float>(-hitY, hitX, 0.0) // Curve spin
+                    spinMagnitude = hitDistance * velocityScale * 20.0
+                }
+                else { // Default (Plant/Double/Cushion Shot)
+                    let hitNormal = normalize(SIMD3<Float>(-hitX, -hitY, 1.0))
+                    velocity = SIMD2<Float>(hitNormal.x, hitNormal.z) * baseVel
+                    spinAxis = SIMD3<Float>(-hitY, hitX, 0.0)
+                    spinMagnitude = hitDistance * velocityScale * 10.0
+                }
 
-                // Apply spin based on hit offset
-                let spinAxis = SIMD3<Float>(-cueTipOffset.y, cueTipOffset.x, 0.0)
-                let spinMagnitude = simd_length(cueTipOffset) * velocityScale * 10.0
+                // Apply velocity
+                balls[0].velocity = velocity
+
+                // Apply spin
                 if spinMagnitude > 0.001 {
                     let spinQuat = quaternionFromAxisAngle(normalize(spinAxis), spinMagnitude * deltaTime)
                     balls[0].quaternion = quaternionMultiply(spinQuat, balls[0].quaternion)
@@ -883,28 +926,23 @@ struct ContentView: View {
                         .onChanged { value in
                             if simulation.showCueValue == 1 && !simulation.shooting {
                                 if initialTouch == nil {
-                                    // Record initial touch position and tip offset
                                     initialTouch = value.startLocation
                                     initialTipOffset = simulation.cueTipOffset
                                 }
                                 
                                 guard let start = initialTouch else { return }
                                 
-                                // Calculate delta from initial touch point
                                 let deltaX = Float(value.location.x - start.x)
                                 let deltaY = Float(value.location.y - start.y)
                                 
-                                // Scale factor based on view size to reach maxTipOffset
-                                let scaleFactor: Float = simulation.maxTipOffset / Float(viewSize.height) * 2.0 // Adjust based on view height
+                                let scaleFactor: Float = simulation.maxTipOffset / Float(viewSize.height) * 2.0
                                 let aspect = Float(viewSize.width / viewSize.height)
                                 
-                                // Calculate new tip position relative to initial offset
                                 var newOffset = initialTipOffset + SIMD2<Float>(
-                                    deltaX * scaleFactor * aspect,  // Scale X movement
-                                    -deltaY * scaleFactor + 0.05     // Scale Y movement, add height offset
+                                    deltaX * scaleFactor * aspect,
+                                    -deltaY * scaleFactor + 0.05
                                 )
                                 
-                                // Clamp to ball surface
                                 let offsetLength = simd_length(newOffset)
                                 if offsetLength > simulation.maxTipOffset {
                                     newOffset = newOffset * (simulation.maxTipOffset / offsetLength)
