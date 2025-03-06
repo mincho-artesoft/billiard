@@ -2,7 +2,7 @@ import SwiftUI
 import MetalKit
 import simd
 
-// MARK: - Metal Shaders
+// MARK: - Metal Shader Source
 let metalShader = """
 #include <metal_stdlib>
 using namespace metal;
@@ -18,7 +18,7 @@ struct Ball {
     float4 quaternion;
 };
 
-// Utility functions:
+// ================== Utility Functions ===================
 float3 hsvToRgb(float3 c) {
     float3 p = abs(fract(c.xxx + float3(1.0, 2.0/3.0, 1.0/3.0)) * 6.0 - 3.0);
     return c.z * mix(float3(1.0), clamp(p - 1.0, 0.0, 1.0), c.y);
@@ -57,6 +57,19 @@ float smoothMax(float a, float b, float r) {
     return -smoothMin(-a, -b, r);
 }
 
+// -------------------- Rotations in 3D --------------------
+float3 rotateX(float3 v, float angle) {
+    float c = cos(angle);
+    float s = sin(angle);
+    return float3(v.x, c*v.y - s*v.z, s*v.y + c*v.z);
+}
+
+float3 rotateY(float3 v, float angle) {
+    float c = cos(angle);
+    float s = sin(angle);
+    return float3(c*v.x + s*v.z, v.y, -s*v.x + c*v.z);
+}
+
 float3x3 qtToRMat(float4 q) {
     q = normalize(q);
     float s = q.w * q.w - 0.5;
@@ -68,7 +81,9 @@ float3x3 qtToRMat(float4 q) {
     return 2.0 * m;
 }
 
-void ballHit(float3 ro, float3 rd, thread float &dist, thread float3 &normal, thread int &id, constant Ball* balls [[buffer(2)]]) {
+// ================ Ball Intersection Helper ================
+void ballHit(float3 ro, float3 rd, thread float &dist, thread float3 &normal,
+             thread int &id, constant Ball* balls [[buffer(2)]]) {
     const int nBall = 16;
     const float rad = 0.47;
     dist = 50.0;
@@ -89,10 +104,19 @@ void ballHit(float3 ro, float3 rd, thread float &dist, thread float3 &normal, th
     }
 }
 
+// ================ Scene Rendering ================
 float3 showScene(float3 ro, float3 rd,
-                 float time, float cueOffset, float2 cueTipOffset,
+                 float time,
+                 float cueOffset,
+                 float2 cueTipOffset,
                  constant Ball* balls [[buffer(2)]],
-                 int cueVisible, float cueAngle) {
+                 int cueVisible,
+                 // 2D: original single angle
+                 float cueAngle,
+                 // 3D: new yaw & pitch
+                 float2 cue3DRotate)
+{
+    // Table, geometry constants
     const float hbLen = 8.0;
     const float bWid  = 0.4;
     const float2 hIn  = float2(hbLen, hbLen * 1.75) - bWid;
@@ -102,6 +126,7 @@ float3 showScene(float3 ro, float3 rd,
     float t = 0.0;
     const float maxDist = 50.0;
 
+    // Ray vs. White Ball (and others)
     float dstBall;
     float3 ballNormal;
     int ballId;
@@ -111,6 +136,7 @@ float3 showScene(float3 ro, float3 rd,
     float dstCue   = maxDist;
     float3 cueHitPos;
 
+    // Marching until hitting table, or the cue, or the ball
     for (int i = 0; i < 80; i++) {
         float3 p = ro + rd * t;
         float dSurface = prBoxDf(p, float3(hIn.x, 0.4, hIn.y));
@@ -118,6 +144,7 @@ float3 showScene(float3 ro, float3 rd,
         float dBorder = prRoundBoxDf(pb, float3(hIn.x + 0.6, 0.5, hIn.y + 0.6), 0.2);
 
         float dTable = max(dBorder, -dSurface);
+
         float2 hInPocket = hIn - bWid + 0.03;
         float3 q = p;
         q.x = abs(q.x) - hInPocket.x;
@@ -125,24 +152,46 @@ float3 showScene(float3 ro, float3 rd,
         float pocketDist = length(q.xz);
         dTable = smoothMax(dTable, 0.53 - pocketDist, 0.01);
 
+        // ----------- Cue calculation -----------
         float3 pc = p - float3(balls[0].position.x, 0.05, balls[0].position.y);
         pc.y -= 0.05;
+
+        // The original "baseAngle" for subtle motion:
         float baseAngle = sin(time * 0.5) * 0.1;
-        pc.xz = -rot2D(pc.xz, baseAngle + cueAngle);
+
+        // ---- PITCH and YAW rotations ----
+        // 1) Pitch rotation around X axis
+        pc = rotateX(pc, cue3DRotate.y);
+
+        // 2) Yaw rotation around the Y axis
+        float finalYaw = baseAngle + cue3DRotate.x;  // combine base wobble + user yaw
+
+        // -- FIX: Remove the negative sign so the cue is oriented correctly --
+        pc = rotateY(pc, finalYaw);
+
+        // Now shift the cue forward/back based on user pull
         float cueLength = 2.5;
         float ballRadius = 0.47;
         float tipOffset = cueLength;
         float maxCueOffset = -ballRadius;
-        pc.z -= (maxCueOffset - cueOffset - tipOffset);
+        pc.z += (maxCueOffset - cueOffset - tipOffset);
+        pc = rotateY(pc, 3.14159);
+
+        // Shift horizontally by the user’s offset on the cue tip
         pc.x -= cueTipOffset.x;
         pc.y -= cueTipOffset.y;
+
         float dCueStick = prRoundCylDf(pc, 0.1 - (0.015 / 2.5) * (pc.z + tipOffset), 0.05, cueLength);
         if (cueVisible == 0) dCueStick = 99999.0;
 
         float d = min(dTable, dCueStick);
         if (d < 0.0005 || t > dstBall) {
-            if (dTable < dCueStick) dstTable = t;
-            else { dstCue = t; cueHitPos = pc; }
+            if (dTable < dCueStick) {
+                dstTable = t;
+            } else {
+                dstCue = t;
+                cueHitPos = pc;
+            }
             break;
         }
         t += d * 0.7;
@@ -152,6 +201,7 @@ float3 showScene(float3 ro, float3 rd,
     float3 lightPos = float3(0.0, 3.0 * hbLen, 0.0);
     float minDist = min(min(dstBall, dstTable), dstCue);
 
+    // =============== Shading ================
     if (minDist < maxDist) {
         if (dstBall <= min(dstTable, dstCue)) {
             float3 p = ro + rd * dstBall;
@@ -204,6 +254,7 @@ float3 showScene(float3 ro, float3 rd,
                 prRoundCylDf(cueHitPos + eps.yyx, 0.1, 0.05, 2.5) -
                 prRoundCylDf(cueHitPos - eps.yyx, 0.1, 0.05, 2.5)
             ));
+            // Simple 2-tone color for the cue
             col = (cueHitPos.z < 2.2) ? float3(0.5, 0.3, 0.0) : float3(0.7, 0.7, 0.3);
             float diff = max(dot(n, normalize(lightPos - p)), 0.0);
             float3 r = reflect(rd, n);
@@ -245,6 +296,7 @@ float3 showScene(float3 ro, float3 rd,
     return clamp(col, 0.0, 1.0);
 }
 
+// =============== Standard Vertex/Fragment Shaders ================
 vertex VertexOut vertexShader(uint vertexID [[vertex_id]]) {
     constexpr float2 positions[4] = {
         float2(-1.0, -1.0),
@@ -264,45 +316,52 @@ vertex VertexOut vertexShader(uint vertexID [[vertex_id]]) {
     return out;
 }
 
+// Orbiting camera fragment
 fragment float4 fragmentShader(VertexOut in [[stage_in]],
-                               constant float2 &resolution [[buffer(0)]],
-                               constant float &time        [[buffer(1)]],
-                               constant Ball* balls        [[buffer(2)]],
-                               constant float &cueOffset   [[buffer(3)]],
-                               constant int &cueVisible    [[buffer(4)]],
+                               constant float2 &resolution   [[buffer(0)]],
+                               constant float &time          [[buffer(1)]],
+                               constant Ball* balls          [[buffer(2)]],
+                               constant float &cueOffset     [[buffer(3)]],
+                               constant int &cueVisible      [[buffer(4)]],
                                constant float2 &cueTipOffset [[buffer(5)]],
-                               constant float &cueAngle    [[buffer(6)]]) {
+                               constant float &cueAngle      [[buffer(6)]],
+                               constant float2 &cue3DRotate  [[buffer(7)]]) {
     float2 uv = 2.0 * in.uv - 1.0;
     uv.x *= resolution.x / resolution.y;
 
     float3 target = float3(0.0, 0.0, 0.0);
     float3 ro = float3(0.0, 10.0, 20.0);
+
     float angle = time * 0.1;
     ro = float3(sin(angle) * 20.0, 10.0, cos(angle) * 20.0);
 
     float3 vd = normalize(target - ro);
     float3 right = normalize(cross(float3(0.0, 1.0, 0.0), vd));
     float3 up = normalize(cross(vd, right));
+
     const float fov = 0.8;
     float3 rd = normalize(vd + right * uv.x * fov + up * uv.y * fov);
 
-    float3 col = showScene(ro, rd, time, cueOffset, cueTipOffset, balls, cueVisible, cueAngle);
+    float3 col = showScene(ro, rd, time, cueOffset, cueTipOffset,
+                           balls, cueVisible, cueAngle, cue3DRotate);
     return float4(col, 1.0);
 }
 
+// Behind-ball camera fragment
 fragment float4 behindBallFragmentShader(VertexOut in [[stage_in]],
-                                         constant float2 &resolution          [[buffer(0)]],
-                                         constant float3 &cameraPosition      [[buffer(1)]],
-                                         constant float3 &cameraTarget        [[buffer(2)]],
-                                         constant Ball*  balls                [[buffer(3)]],
-                                         constant float  &cueOffset           [[buffer(4)]],
-                                         constant int    &cueVisible          [[buffer(5)]],
-                                         constant float2 &cueTipOffset        [[buffer(6)]],
-                                         constant float  &cueAngle            [[buffer(7)]]) {
+                                         constant float2 &resolution   [[buffer(0)]],
+                                         constant float3 &cameraPos    [[buffer(1)]],
+                                         constant float3 &cameraTarget [[buffer(2)]],
+                                         constant Ball*  balls         [[buffer(3)]],
+                                         constant float  &cueOffset    [[buffer(4)]],
+                                         constant int    &cueVisible   [[buffer(5)]],
+                                         constant float2 &cueTipOffset [[buffer(6)]],
+                                         constant float  &cueAngle     [[buffer(7)]],
+                                         constant float2 &cue3DRotate  [[buffer(8)]]) {
     float2 uv = 2.0 * in.uv - 1.0;
     uv.x *= resolution.x / resolution.y;
 
-    float3 ro = cameraPosition;
+    float3 ro = cameraPos;
     float3 target = cameraTarget;
 
     float3 vd = normalize(target - ro);
@@ -313,18 +372,43 @@ fragment float4 behindBallFragmentShader(VertexOut in [[stage_in]],
     float3 rd = normalize(vd + right * uv.x * fov + up * uv.y * fov);
 
     float timeDummy = 0.0;
-    float3 col = showScene(ro, rd, timeDummy, cueOffset, cueTipOffset, balls, cueVisible, cueAngle);
+    float3 col = showScene(ro, rd, timeDummy, cueOffset, cueTipOffset,
+                           balls, cueVisible, cueAngle, cue3DRotate);
+    return float4(col, 1.0);
+}
+
+// Third-ball camera fragment
+fragment float4 thirdBallFragmentShader(VertexOut in [[stage_in]],
+                                        constant float2 &resolution   [[buffer(0)]],
+                                        constant float3 &cameraPos    [[buffer(1)]],
+                                        constant float3 &cameraTarget [[buffer(2)]],
+                                        constant Ball*  balls         [[buffer(3)]],
+                                        constant float  &cueOffset    [[buffer(4)]],
+                                        constant int    &cueVisible   [[buffer(5)]],
+                                        constant float2 &cueTipOffset [[buffer(6)]],
+                                        constant float  &cueAngle     [[buffer(7)]],
+                                        constant float2 &cue3DRotate  [[buffer(8)]]) {
+    float2 uv = 2.0 * in.uv - 1.0;
+    uv.x *= resolution.x / resolution.y;
+
+    float3 ro = cameraPos;
+    float3 target = cameraTarget;
+
+    float3 vd = normalize(target - ro);
+    float3 right = normalize(cross(float3(0.0, 1.0, 0.0), vd));
+    float3 up = normalize(cross(vd, right));
+
+    const float fov = 0.8;
+    float3 rd = normalize(vd + right * uv.x * fov + up * uv.y * fov);
+
+    float timeDummy = 0.0;
+    float3 col = showScene(ro, rd, timeDummy, cueOffset, cueTipOffset,
+                           balls, cueVisible, cueAngle, cue3DRotate);
     return float4(col, 1.0);
 }
 """
 
-// MARK: - Swift Data Structures and Utilities
-struct BallData {
-    var position: SIMD2<Float>
-    var velocity: SIMD2<Float>
-    var quaternion: SIMD4<Float>
-}
-
+// MARK: - Swift Utility for Quaternions
 func quaternionFromAxisAngle(_ axis: SIMD3<Float>, _ angle: Float) -> SIMD4<Float> {
     let halfAngle = angle * 0.5
     let s = sin(halfAngle)
@@ -340,43 +424,64 @@ func quaternionMultiply(_ q1: SIMD4<Float>, _ q2: SIMD4<Float>) -> SIMD4<Float> 
     )
 }
 
-// MARK: - The Single Shared Simulation
+// MARK: - Ball Data
+struct BallData {
+    var position: SIMD2<Float>
+    var velocity: SIMD2<Float>
+    var quaternion: SIMD4<Float>
+}
+
+// MARK: - Main Simulation
 final class BilliardSimulation: ObservableObject {
     let device: MTLDevice
     let commandQueue: MTLCommandQueue
+
     private let orbitPipeline: MTLRenderPipelineState
     private let behindPipeline: MTLRenderPipelineState
+    private let thirdPipeline: MTLRenderPipelineState
 
-    var time: Float = 0.0
-    var isTouching: Bool = false
-    var cueOffset: Float = 0.0
-    var cueTipOffset: SIMD2<Float> = .zero
-    var cueAngle: Float = 0.0
-    var showCueValue: Int32 = 1
+    @Published var time: Float = 0.0
+    @Published var isTouching: Bool = false
+    
+    // How far the user has pulled the stick backward/forward
+    @Published var cueOffset: Float = 0.0
+    
+    // Tip offset on the cue’s face (where you strike the ball)
+    @Published var cueTipOffset: SIMD2<Float> = .zero
+    
+    // Whether we should see the cue in the scene
+    @Published var showCueValue: Int32 = 1
+    
+    // Original single angle (used by “behind” camera or orbit)
+    @Published var cueAngle: Float = 0.0
+    
+    // New Yaw/Pitch for full 3D orientation
+    @Published var cue3DRotate: SIMD2<Float> = SIMD2<Float>(0, 0)
+    
+    @Published var shooting: Bool = false
 
     var balls: [BallData]
     private var ballBuffer: MTLBuffer
 
+    // Physics config
     private let ballRadius: Float = 0.47
     private let tableWidth: Float = 7.6
     private let tableLength: Float = 13.3
     private let pocketRadius: Float = 0.53
-
     private let cuePullSpeed: Float = 1.0
     private let cueStrikeSpeed: Float = 5.0
     private let maxCueOffset: Float = 2.0
     public  let maxTipOffset: Float = 0.47
 
     private var hitTriggered: Bool = false
-    public  var shooting: Bool = false
     private var powerAtRelease: Float = 0.0
 
-    private let friction: Float = 0.96  // Reduced for realism (0.95–0.97 for pool)
-    private let restitution: Float = 0.75  // Reduced for realism (0.7–0.8 for pool)
-    private let minVelocity: Float = 0.005  // Lowered for finer control
+    private let friction: Float = 0.96
+    private let restitution: Float = 0.75
+    private let minVelocity: Float = 0.005
     private let ballMass: Float = 1.0
-    private let momentOfInertia: Float = 0.4 * 0.47 * 0.47
 
+    // Uniform buffers
     private var resolution = SIMD2<Float>(0,0)
     private var orbitUniformsBuffer: MTLBuffer
     private var behindCamPosBuffer: MTLBuffer
@@ -387,6 +492,7 @@ final class BilliardSimulation: ObservableObject {
     private var showCueBuffer: MTLBuffer
     private var cueTipOffsetBuffer: MTLBuffer
     private var cueAngleBuffer: MTLBuffer
+    private var cue3DRotateBuffer: MTLBuffer
 
     init?() {
         guard let dev = MTLCreateSystemDefaultDevice(),
@@ -396,6 +502,7 @@ final class BilliardSimulation: ObservableObject {
         device = dev
         commandQueue = cq
 
+        // Compile our Metal shaders
         let library: MTLLibrary
         do {
             library = try device.makeLibrary(source: metalShader, options: nil)
@@ -403,27 +510,39 @@ final class BilliardSimulation: ObservableObject {
             print("Failed to create Metal library: \(error)")
             return nil
         }
+
         guard
-            let vertexFunction = library.makeFunction(name: "vertexShader"),
-            let orbitFrag = library.makeFunction(name: "fragmentShader"),
-            let behindFrag = library.makeFunction(name: "behindBallFragmentShader")
+            let vertexFunction    = library.makeFunction(name: "vertexShader"),
+            let orbitFragment     = library.makeFunction(name: "fragmentShader"),
+            let behindFragment    = library.makeFunction(name: "behindBallFragmentShader"),
+            let thirdFragment     = library.makeFunction(name: "thirdBallFragmentShader")
         else {
             print("Missing required shader functions.")
             return nil
         }
 
         do {
+            // Orbit pipeline
             let orbitDescriptor = MTLRenderPipelineDescriptor()
             orbitDescriptor.vertexFunction = vertexFunction
-            orbitDescriptor.fragmentFunction = orbitFrag
+            orbitDescriptor.fragmentFunction = orbitFragment
             orbitDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
             orbitPipeline = try device.makeRenderPipelineState(descriptor: orbitDescriptor)
 
+            // Behind pipeline
             let behindDescriptor = MTLRenderPipelineDescriptor()
             behindDescriptor.vertexFunction = vertexFunction
-            behindDescriptor.fragmentFunction = behindFrag
+            behindDescriptor.fragmentFunction = behindFragment
             behindDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
             behindPipeline = try device.makeRenderPipelineState(descriptor: behindDescriptor)
+
+            // Third pipeline
+            let thirdDescriptor = MTLRenderPipelineDescriptor()
+            thirdDescriptor.vertexFunction = vertexFunction
+            thirdDescriptor.fragmentFunction = thirdFragment
+            thirdDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+            thirdPipeline = try device.makeRenderPipelineState(descriptor: thirdDescriptor)
+
         } catch {
             print("Failed to create pipeline state: \(error)")
             return nil
@@ -431,7 +550,9 @@ final class BilliardSimulation: ObservableObject {
 
         let identityQuat = SIMD4<Float>(0, 0, 0, 1)
         self.balls = [
+            // White ball in front
             BallData(position: SIMD2<Float>( 0.0,  5.0), velocity: SIMD2<Float>(0.0, 0.0), quaternion: identityQuat),
+            // Triangular rack
             BallData(position: SIMD2<Float>(-0.5, -2.0), velocity: SIMD2<Float>(0.0, 0.0), quaternion: identityQuat),
             BallData(position: SIMD2<Float>( 0.5, -2.0), velocity: SIMD2<Float>(0.0, 0.0), quaternion: identityQuat),
             BallData(position: SIMD2<Float>(-1.0, -1.5), velocity: SIMD2<Float>(0.0, 0.0), quaternion: identityQuat),
@@ -449,13 +570,14 @@ final class BilliardSimulation: ObservableObject {
             BallData(position: SIMD2<Float>( 0.0,  0.0), velocity: SIMD2<Float>(0.0, 0.0), quaternion: identityQuat)
         ]
 
+        // Prepare ball buffer for GPU
         var ballShaderData = [SIMD8<Float>](repeating: SIMD8<Float>(0,0,0,0,0,0,0,0), count: 16)
         for i in 0..<16 {
             ballShaderData[i] = SIMD8<Float>(
                 balls[i].position.x,  balls[i].position.y,
                 balls[i].velocity.x,  balls[i].velocity.y,
-                balls[i].quaternion.x,balls[i].quaternion.y,
-                balls[i].quaternion.z,balls[i].quaternion.w
+                balls[i].quaternion.x, balls[i].quaternion.y,
+                balls[i].quaternion.z, balls[i].quaternion.w
             )
         }
         self.ballBuffer = device.makeBuffer(bytes: ballShaderData,
@@ -467,10 +589,12 @@ final class BilliardSimulation: ObservableObject {
         behindCamTargetBuffer   = device.makeBuffer(length: MemoryLayout<SIMD3<Float>>.stride, options: .storageModeShared)!
         thirdCamPosBuffer       = device.makeBuffer(length: MemoryLayout<SIMD3<Float>>.stride, options: .storageModeShared)!
         thirdCamTargetBuffer    = device.makeBuffer(length: MemoryLayout<SIMD3<Float>>.stride, options: .storageModeShared)!
-        cueOffsetBuffer         = device.makeBuffer(length: MemoryLayout<Float>.stride, options: .storageModeShared)!
-        showCueBuffer           = device.makeBuffer(length: MemoryLayout<Int32>.stride, options: .storageModeShared)!
+
+        cueOffsetBuffer         = device.makeBuffer(length: MemoryLayout<Float>.stride,  options: .storageModeShared)!
+        showCueBuffer           = device.makeBuffer(length: MemoryLayout<Int32>.stride,  options: .storageModeShared)!
         cueTipOffsetBuffer      = device.makeBuffer(length: MemoryLayout<SIMD2<Float>>.stride, options: .storageModeShared)!
-        cueAngleBuffer          = device.makeBuffer(length: MemoryLayout<Float>.stride, options: .storageModeShared)!
+        cueAngleBuffer          = device.makeBuffer(length: MemoryLayout<Float>.stride,  options: .storageModeShared)!
+        cue3DRotateBuffer       = device.makeBuffer(length: MemoryLayout<SIMD2<Float>>.stride, options: .storageModeShared)!
     }
 
     private func checkPocket(pos: SIMD2<Float>) -> Bool {
@@ -490,7 +614,9 @@ final class BilliardSimulation: ObservableObject {
         return false
     }
 
+    // =============== PHYSICS UPDATE ===============
     func updatePhysics(deltaTime: Float) {
+        // Cue pulling and releasing
         if isTouching && !shooting {
             cueOffset += cuePullSpeed * deltaTime
             if cueOffset > maxCueOffset {
@@ -505,81 +631,19 @@ final class BilliardSimulation: ObservableObject {
             cueOffset -= cueStrikeSpeed * deltaTime
             if (cueOffset <= 0.0) {
                 cueOffset = 0.0
-                let baseVelocity: Float = -20.0  // Reduced for realism
-                let velocityScale = 0.3 + 1.7 * powerAtRelease  // Adjusted for realistic power range
-                let hitOffset = cueTipOffset
-                
+                let baseVelocity: Float = -20.0
+                let velocityScale = 0.3 + 1.7 * powerAtRelease
+                // For simplicity, applying the velocity using cueAngle only:
                 let angleRad = -cueAngle
                 let cosA = cos(angleRad)
                 let sinA = sin(angleRad)
-                let effectiveHitOffset = SIMD2<Float>(
-                    hitOffset.x * cosA - hitOffset.y * sinA,
-                    hitOffset.x * sinA + hitOffset.y * cosA
-                )
-                
-                let hitY = effectiveHitOffset.y - 0.05  // Slight offset for cue tip
-                let hitX = effectiveHitOffset.x
-                let hitDistance = simd_length(effectiveHitOffset)
-                let baseVel = Float(baseVelocity * velocityScale)
-                var velocity = SIMD2<Float>.zero
-                var spinAxis = SIMD3<Float>.zero
-                var spinMagnitude: Float = 0.0
 
-                // Straight Shot (center hit, no spin)
-                if abs(hitX) < 0.05 && abs(hitY) < 0.05 {
-                    velocity = SIMD2<Float>(0.0, baseVel)
-                    if powerAtRelease > 0.8 {  // High power for break-like shots
-                        velocity *= 2.0  // Increased for break shot realism
-                    }
-                    spinAxis = .zero  // No spin for pure straight shot
-                    spinMagnitude = 0.0
-                }
-                // Draw Shot (low hit for backspin)
-                else if hitY < -0.2 {
-                    velocity = SIMD2<Float>(0.0, baseVel * 0.8)
-                    spinAxis = SIMD3<Float>(1.0, 0.0, 0.0)  // Backspin
-                    spinMagnitude = -hitY * velocityScale * 30.0  // Increased for stronger backspin
-                }
-                // Force Follow/Side Spin (side hit for sidespin)
-                else if abs(hitX) > 0.2 && abs(hitY) < 0.1 {
-                    velocity = SIMD2<Float>(0.0, baseVel * 0.9)
-                    spinAxis = SIMD3<Float>(0.0, 0.0, 1.0)  // Sidespin
-                    spinMagnitude = hitX * velocityScale * 20.0  // Increased for realistic follow
-                }
-                // Jump Shot (high hit with upward force)
-                else if hitY > 0.2 && abs(hitX) < 0.1 {
-                    velocity = SIMD2<Float>(0.0, baseVel * 1.2)
-                    spinAxis = SIMD3<Float>(1.0, 0.0, 0.0)  // Slight backspin to control landing
-                    spinMagnitude = hitY * velocityScale * 10.0
-                    balls[0].velocity.y += 10.0  // Increased jump height
-                }
-                // Masse Shot (extreme offset for curve)
-                else if hitY > 0.3 || abs(hitX) > 0.3 {
-                    velocity = SIMD2<Float>(hitX * baseVel * 0.5, baseVel * 0.7)
-                    spinAxis = SIMD3<Float>(-hitY, hitX, 0.0)  // Curve based on offset
-                    spinMagnitude = hitDistance * velocityScale * 40.0  // Stronger curve for masse
-                }
-                // Default/Short Offset (general angled shot)
-                else {
-                    let hitNormal = normalize(SIMD3<Float>(-hitX, -hitY, 1.0))
-                    velocity = SIMD2<Float>(hitNormal.x, hitNormal.z) * baseVel
-                    spinAxis = SIMD3<Float>(-hitY, hitX, 0.0)
-                    spinMagnitude = hitDistance * velocityScale * 15.0  // Moderate spin for angled shots
-                }
-
-                // Rotate velocity to match cue angle
+                var velocity = SIMD2<Float>(0, baseVelocity * velocityScale)
                 velocity = SIMD2<Float>(
                     velocity.x * cosA - velocity.y * sinA,
                     velocity.x * sinA + velocity.y * cosA
                 )
                 balls[0].velocity = velocity
-
-                // Apply spin for realistic shot types
-                if spinMagnitude > 0.001 {
-                    let spinQuat = quaternionFromAxisAngle(normalize(spinAxis), spinMagnitude * deltaTime)
-                    balls[0].quaternion = quaternionMultiply(spinQuat, balls[0].quaternion)
-                    balls[0].quaternion = simd_normalize(balls[0].quaternion)
-                }
 
                 hitTriggered = true
                 shooting = false
@@ -603,60 +667,31 @@ final class BilliardSimulation: ObservableObject {
             }
         }
 
-        let subSteps = 4  // Increased for better accuracy in collisions
+        // Basic sub-stepping
+        let subSteps = 4
         let dt = deltaTime / Float(subSteps)
 
         for _ in 0..<subSteps {
             for i in 0..<16 {
                 var pos = balls[i].position
                 var vel = balls[i].velocity
-                var quat = balls[i].quaternion
 
                 if vel.x.isInfinite { continue }
 
                 pos += vel * dt
 
-                // Apply spin to velocity for realistic motion
-                let angVel3D = SIMD3<Float>(0.0, vel.x / ballRadius, -vel.y / ballRadius)
-                let angSpeed = simd_length(angVel3D)
-                if angSpeed > 0.0 {
-                    let axis = angVel3D / angSpeed
-                    let dq = quaternionFromAxisAngle(axis, angSpeed * dt)
-                    quat = quaternionMultiply(dq, quat)
-                    quat = simd_normalize(quat)
-                    // Apply spin-induced velocity (simplified for pool physics)
-                    let spinEffect = SIMD2<Float>(-quat.z * angSpeed * 0.1, quat.y * angSpeed * 0.1)  // Adjust for realism
-                    vel += spinEffect * dt
-                }
-
                 if checkPocket(pos: pos) {
+                    // Pocketed
                     vel = SIMD2<Float>(.infinity, .infinity)
                     pos = SIMD2<Float>(0.0, 0.0)
                 } else {
-                    // Rail collisions with realistic angles and restitution
                     if abs(pos.x) > tableWidth - ballRadius {
                         pos.x = (pos.x > 0) ? tableWidth - ballRadius : -tableWidth + ballRadius
-                        let incidentAngle = atan2(vel.y, vel.x)
-                        let normalAngle = (pos.x > 0) ? 0.0 : Float.pi
-                        let reflectionAngle = 2.0 * normalAngle - incidentAngle
-                        let speed = simd_length(vel)
-                        vel = SIMD2<Float>(cos(reflectionAngle), sin(reflectionAngle)) * speed * restitution
-                        let angVel = vel.y / ballRadius
-                        let dq = quaternionFromAxisAngle(SIMD3<Float>(0, 0, 1), angVel * dt)
-                        quat = quaternionMultiply(dq, quat)
-                        quat = simd_normalize(quat)
+                        vel.x = -vel.x * restitution
                     }
                     if abs(pos.y) > tableLength - ballRadius {
                         pos.y = (pos.y > 0) ? tableLength - ballRadius : -tableLength + ballRadius
-                        let incidentAngle = atan2(vel.x, vel.y)
-                        let normalAngle = (pos.y > 0) ? Float.pi / 2.0 : -Float.pi / 2.0
-                        let reflectionAngle = 2.0 * normalAngle - incidentAngle
-                        let speed = simd_length(vel)
-                        vel = SIMD2<Float>(-sin(reflectionAngle), cos(reflectionAngle)) * speed * restitution
-                        let angVel = -vel.x / ballRadius
-                        let dq = quaternionFromAxisAngle(SIMD3<Float>(0, 1, 0), angVel * dt)
-                        quat = quaternionMultiply(dq, quat)
-                        quat = simd_normalize(quat)
+                        vel.y = -vel.y * restitution
                     }
                 }
 
@@ -667,18 +702,15 @@ final class BilliardSimulation: ObservableObject {
 
                 balls[i].position = pos
                 balls[i].velocity = vel
-                balls[i].quaternion = quat
             }
 
-            // Ball-ball collisions with realistic angles and energy loss
+            // Ball-ball collisions
             for i in 0..<15 {
                 for j in (i+1)..<16 {
                     var pos1 = balls[i].position
                     var pos2 = balls[j].position
                     var vel1 = balls[i].velocity
                     var vel2 = balls[j].velocity
-                    var quat1 = balls[i].quaternion
-                    var quat2 = balls[j].quaternion
 
                     if vel1.x.isInfinite || vel2.x.isInfinite { continue }
 
@@ -693,40 +725,21 @@ final class BilliardSimulation: ObservableObject {
                             vel1 += normal * (impulseMag / ballMass)
                             vel2 -= normal * (impulseMag / ballMass)
 
-                            let tangent = SIMD2<Float>(-normal.y, normal.x)
-                            let relVelTangent = simd_dot(relativeVel, tangent)
-                            let frictionImpulse = relVelTangent * 0.15  // Reduced for realistic sliding
-
-                            let angVel1 = frictionImpulse / momentOfInertia
-                            let angVel2 = -frictionImpulse / momentOfInertia
-
-                            let axis1 = SIMD3<Float>(tangent.x, tangent.y, 0)
-                            let axis2 = -axis1
-                            let dq1 = quaternionFromAxisAngle(axis1, angVel1 * dt)
-                            let dq2 = quaternionFromAxisAngle(axis2, angVel2 * dt)
-
-                            quat1 = quaternionMultiply(dq1, quat1)
-                            quat2 = quaternionMultiply(dq2, quat2)
-                            quat1 = simd_normalize(quat1)
-                            quat2 = simd_normalize(quat2)
-
                             let overlap = (2.0 * ballRadius) - dist
                             let correction = normal * (overlap * 0.5)
                             pos1 -= correction
                             pos2 += correction
                         }
-
                         balls[i].position = pos1
                         balls[j].position = pos2
                         balls[i].velocity = vel1
                         balls[j].velocity = vel2
-                        balls[i].quaternion = quat1
-                        balls[j].quaternion = quat2
                     }
                 }
             }
         }
 
+        // Write back to GPU buffer
         let ptr = ballBuffer.contents().bindMemory(to: SIMD8<Float>.self, capacity: 16)
         for i in 0..<16 {
             ptr[i] = SIMD8<Float>(
@@ -738,10 +751,13 @@ final class BilliardSimulation: ObservableObject {
         }
     }
 
+    // MARK: - Encode Renders
+
     func encodeOrbitRenderPass(encoder: MTLRenderCommandEncoder, viewSize: CGSize) {
         self.resolution = SIMD2<Float>(Float(viewSize.width), Float(viewSize.height))
 
-        encoder.setFragmentBytes(&resolution, length: MemoryLayout<SIMD2<Float>>.size, index: 0)
+        // Buffers to match the fragmentShader signature
+        encoder.setFragmentBytes(&resolution, length: MemoryLayout<SIMD2<Float>>.stride, index: 0)
 
         let timePtr = orbitUniformsBuffer.contents().bindMemory(to: Float.self, capacity: 1)
         timePtr[0] = self.time
@@ -749,21 +765,20 @@ final class BilliardSimulation: ObservableObject {
 
         encoder.setFragmentBuffer(ballBuffer, offset: 0, index: 2)
 
-        let cuePtr = cueOffsetBuffer.contents().bindMemory(to: Float.self, capacity: 1)
-        cuePtr[0] = self.cueOffset
+        cueOffsetBuffer.contents().bindMemory(to: Float.self, capacity: 1)[0] = cueOffset
         encoder.setFragmentBuffer(cueOffsetBuffer, offset: 0, index: 3)
 
-        let showPtr = showCueBuffer.contents().bindMemory(to: Int32.self, capacity: 1)
-        showPtr[0] = self.showCueValue
+        showCueBuffer.contents().bindMemory(to: Int32.self, capacity: 1)[0] = showCueValue
         encoder.setFragmentBuffer(showCueBuffer, offset: 0, index: 4)
 
-        let tipOffsetPtr = cueTipOffsetBuffer.contents().bindMemory(to: SIMD2<Float>.self, capacity: 1)
-        tipOffsetPtr[0] = self.cueTipOffset
+        cueTipOffsetBuffer.contents().bindMemory(to: SIMD2<Float>.self, capacity: 1)[0] = cueTipOffset
         encoder.setFragmentBuffer(cueTipOffsetBuffer, offset: 0, index: 5)
 
-        let anglePtr = cueAngleBuffer.contents().bindMemory(to: Float.self, capacity: 1)
-        anglePtr[0] = self.cueAngle
+        cueAngleBuffer.contents().bindMemory(to: Float.self, capacity: 1)[0] = cueAngle
         encoder.setFragmentBuffer(cueAngleBuffer, offset: 0, index: 6)
+
+        cue3DRotateBuffer.contents().bindMemory(to: SIMD2<Float>.self, capacity: 1)[0] = cue3DRotate
+        encoder.setFragmentBuffer(cue3DRotateBuffer, offset: 0, index: 7)
 
         encoder.setRenderPipelineState(orbitPipeline)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
@@ -777,6 +792,7 @@ final class BilliardSimulation: ObservableObject {
         var cameraTarget = SIMD3<Float>(0, 0.0, 0)
         let speed = simd_length(whiteBall.velocity)
 
+        // Simple logic: if not moving, aim behind the ball using cueAngle
         if speed < 0.01 {
             cameraTarget = SIMD3<Float>(whiteBall.position.x, 0.05, whiteBall.position.y)
             let stationaryDistance: Float = 2.5
@@ -797,8 +813,8 @@ final class BilliardSimulation: ObservableObject {
             cameraPosition.y += 1.0
         }
 
-        encoder.setFragmentBytes(&resolution, length: MemoryLayout<SIMD2<Float>>.size, index: 0)
-
+        // Set buffers
+        encoder.setFragmentBytes(&resolution, length: MemoryLayout<SIMD2<Float>>.stride, index: 0)
         behindCamPosBuffer.contents().bindMemory(to: SIMD3<Float>.self, capacity: 1)[0] = cameraPosition
         encoder.setFragmentBuffer(behindCamPosBuffer, offset: 0, index: 1)
 
@@ -806,14 +822,21 @@ final class BilliardSimulation: ObservableObject {
         encoder.setFragmentBuffer(behindCamTargetBuffer, offset: 0, index: 2)
 
         encoder.setFragmentBuffer(ballBuffer, offset: 0, index: 3)
-        cueOffsetBuffer.contents().bindMemory(to: Float.self, capacity: 1)[0] = self.cueOffset
+
+        cueOffsetBuffer.contents().bindMemory(to: Float.self, capacity: 1)[0] = cueOffset
         encoder.setFragmentBuffer(cueOffsetBuffer, offset: 0, index: 4)
-        showCueBuffer.contents().bindMemory(to: Int32.self, capacity: 1)[0] = self.showCueValue
+
+        showCueBuffer.contents().bindMemory(to: Int32.self, capacity: 1)[0] = showCueValue
         encoder.setFragmentBuffer(showCueBuffer, offset: 0, index: 5)
-        cueTipOffsetBuffer.contents().bindMemory(to: SIMD2<Float>.self, capacity: 1)[0] = self.cueTipOffset
+
+        cueTipOffsetBuffer.contents().bindMemory(to: SIMD2<Float>.self, capacity: 1)[0] = cueTipOffset
         encoder.setFragmentBuffer(cueTipOffsetBuffer, offset: 0, index: 6)
-        cueAngleBuffer.contents().bindMemory(to: Float.self, capacity: 1)[0] = self.cueAngle
+
+        cueAngleBuffer.contents().bindMemory(to: Float.self, capacity: 1)[0] = cueAngle
         encoder.setFragmentBuffer(cueAngleBuffer, offset: 0, index: 7)
+
+        cue3DRotateBuffer.contents().bindMemory(to: SIMD2<Float>.self, capacity: 1)[0] = cue3DRotate
+        encoder.setFragmentBuffer(cue3DRotateBuffer, offset: 0, index: 8)
 
         encoder.setRenderPipelineState(behindPipeline)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
@@ -827,6 +850,7 @@ final class BilliardSimulation: ObservableObject {
         var cameraTarget = SIMD3<Float>(0, 0.0, 0)
         let speed = simd_length(whiteBall.velocity)
 
+        // If ball is still, place camera behind the ball, offset more
         if speed < 0.01 {
             cameraTarget = SIMD3<Float>(whiteBall.position.x, 0.05, whiteBall.position.y)
             let stationaryDistance: Float = 7.0
@@ -848,8 +872,8 @@ final class BilliardSimulation: ObservableObject {
             cameraPosition.y += 1.0
         }
 
-        encoder.setFragmentBytes(&resolution, length: MemoryLayout<SIMD2<Float>>.size, index: 0)
-
+        // Set buffers
+        encoder.setFragmentBytes(&resolution, length: MemoryLayout<SIMD2<Float>>.stride, index: 0)
         thirdCamPosBuffer.contents().bindMemory(to: SIMD3<Float>.self, capacity: 1)[0] = cameraPosition
         encoder.setFragmentBuffer(thirdCamPosBuffer, offset: 0, index: 1)
 
@@ -857,32 +881,35 @@ final class BilliardSimulation: ObservableObject {
         encoder.setFragmentBuffer(thirdCamTargetBuffer, offset: 0, index: 2)
 
         encoder.setFragmentBuffer(ballBuffer, offset: 0, index: 3)
-        cueOffsetBuffer.contents().bindMemory(to: Float.self, capacity: 1)[0] = self.cueOffset
+
+        cueOffsetBuffer.contents().bindMemory(to: Float.self, capacity: 1)[0] = cueOffset
         encoder.setFragmentBuffer(cueOffsetBuffer, offset: 0, index: 4)
-        showCueBuffer.contents().bindMemory(to: Int32.self, capacity: 1)[0] = self.showCueValue
+
+        showCueBuffer.contents().bindMemory(to: Int32.self, capacity: 1)[0] = showCueValue
         encoder.setFragmentBuffer(showCueBuffer, offset: 0, index: 5)
-        cueTipOffsetBuffer.contents().bindMemory(to: SIMD2<Float>.self, capacity: 1)[0] = self.cueTipOffset
+
+        cueTipOffsetBuffer.contents().bindMemory(to: SIMD2<Float>.self, capacity: 1)[0] = cueTipOffset
         encoder.setFragmentBuffer(cueTipOffsetBuffer, offset: 0, index: 6)
-        cueAngleBuffer.contents().bindMemory(to: Float.self, capacity: 1)[0] = self.cueAngle
+
+        cueAngleBuffer.contents().bindMemory(to: Float.self, capacity: 1)[0] = cueAngle
         encoder.setFragmentBuffer(cueAngleBuffer, offset: 0, index: 7)
 
-        encoder.setRenderPipelineState(behindPipeline)
+        cue3DRotateBuffer.contents().bindMemory(to: SIMD2<Float>.self, capacity: 1)[0] = cue3DRotate
+        encoder.setFragmentBuffer(cue3DRotateBuffer, offset: 0, index: 8)
+
+        encoder.setRenderPipelineState(thirdPipeline)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
     }
 }
 
-// MARK: - Orbiting Camera View
+// MARK: - SwiftUI MTKViews
 struct OrbitingMetalView: UIViewRepresentable {
     @ObservedObject var simulation: BilliardSimulation
 
     class Coordinator: NSObject, MTKViewDelegate {
         var parent: OrbitingMetalView
-        init(_ parent: OrbitingMetalView) {
-            self.parent = parent
-        }
-
+        init(_ parent: OrbitingMetalView) { self.parent = parent }
         func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
-
         func draw(in view: MTKView) {
             guard let drawable = view.currentDrawable,
                   let rpd = view.currentRenderPassDescriptor,
@@ -897,9 +924,7 @@ struct OrbitingMetalView: UIViewRepresentable {
         }
     }
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(self)
-    }
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeUIView(context: Context) -> MTKView {
         let mtkView = MTKView(frame: .zero, device: simulation.device)
@@ -913,18 +938,13 @@ struct OrbitingMetalView: UIViewRepresentable {
     func updateUIView(_ uiView: MTKView, context: Context) {}
 }
 
-// MARK: - Behind-Ball Camera View
 struct BehindBallMetalView: UIViewRepresentable {
     @ObservedObject var simulation: BilliardSimulation
 
     class Coordinator: NSObject, MTKViewDelegate {
         var parent: BehindBallMetalView
-        init(_ parent: BehindBallMetalView) {
-            self.parent = parent
-        }
-
+        init(_ parent: BehindBallMetalView) { self.parent = parent }
         func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
-
         func draw(in view: MTKView) {
             guard let drawable = view.currentDrawable,
                   let rpd = view.currentRenderPassDescriptor,
@@ -939,9 +959,7 @@ struct BehindBallMetalView: UIViewRepresentable {
         }
     }
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(self)
-    }
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeUIView(context: Context) -> MTKView {
         let mtkView = MTKView(frame: .zero, device: simulation.device)
@@ -955,18 +973,13 @@ struct BehindBallMetalView: UIViewRepresentable {
     func updateUIView(_ uiView: MTKView, context: Context) {}
 }
 
-// MARK: - Third-Ball Camera View
 struct ThirdBallMetalView: UIViewRepresentable {
     @ObservedObject var simulation: BilliardSimulation
 
     class Coordinator: NSObject, MTKViewDelegate {
         var parent: ThirdBallMetalView
-        init(_ parent: ThirdBallMetalView) {
-            self.parent = parent
-        }
-
+        init(_ parent: ThirdBallMetalView) { self.parent = parent }
         func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
-
         func draw(in view: MTKView) {
             guard let drawable = view.currentDrawable,
                   let rpd = view.currentRenderPassDescriptor,
@@ -981,9 +994,7 @@ struct ThirdBallMetalView: UIViewRepresentable {
         }
     }
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(self)
-    }
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeUIView(context: Context) -> MTKView {
         let mtkView = MTKView(frame: .zero, device: simulation.device)
@@ -997,18 +1008,24 @@ struct ThirdBallMetalView: UIViewRepresentable {
     func updateUIView(_ uiView: MTKView, context: Context) {}
 }
 
-// MARK: - The SwiftUI ContentView
+// MARK: - ContentView
 struct ContentView: View {
     @StateObject private var simulation = BilliardSimulation()!
+
+    // For behind-ball (manipulating tip offset)
     @State private var viewSizeBehind: CGSize = .zero
-    @State private var viewSizeThird: CGSize = .zero
     @State private var initialTouchBehind: CGPoint? = nil
-    @State private var initialTouchThird: CGPoint? = nil
     @State private var initialTipOffsetBehind: SIMD2<Float> = .zero
-    @State private var initialCueAngleThird: Float = 0.0
+
+    // For third-ball (manipulating 3D angles)
+    @State private var viewSizeThird: CGSize = .zero
+    @State private var initialTouchThird: CGPoint? = nil
+    @State private var initialCueYawThird: Float = 0.0
+    @State private var initialCuePitchThird: Float = 0.0
 
     var body: some View {
         ZStack {
+            // Full-screen orbit
             OrbitingMetalView(simulation: simulation)
                 .edgesIgnoringSafeArea(.all)
                 .overlay(
@@ -1030,15 +1047,14 @@ struct ContentView: View {
             VStack {
                 Spacer()
                 HStack {
+                    // Behind-Ball camera
                     BehindBallMetalView(simulation: simulation)
                         .frame(width: UIScreen.main.bounds.width / 2,
                                height: UIScreen.main.bounds.width / 2)
                         .background(
                             GeometryReader { geo in
                                 Color.clear
-                                    .onAppear {
-                                        viewSizeBehind = geo.size
-                                    }
+                                    .onAppear { viewSizeBehind = geo.size }
                                     .onChange(of: geo.size) { newSize in
                                         viewSizeBehind = newSize
                                     }
@@ -1070,6 +1086,7 @@ struct ContentView: View {
                                             deltaX * scaleFactor * aspect,
                                             -deltaY * scaleFactor + 0.05
                                         )
+                                        // clamp radius
                                         let offsetLength = simd_length(newOffset)
                                         if offsetLength > simulation.maxTipOffset {
                                             newOffset *= simulation.maxTipOffset / offsetLength
@@ -1083,6 +1100,7 @@ struct ContentView: View {
                                 }
                         )
 
+                    // Third-Ball camera (3D rotation)
                     ThirdBallMetalView(simulation: simulation)
                         .frame(width: UIScreen.main.bounds.width / 2,
                                height: UIScreen.main.bounds.width / 2)
@@ -1096,7 +1114,7 @@ struct ContentView: View {
                             }
                         )
                         .overlay(
-                            Text("Third-Ball Camera")
+                            Text("Third-Ball Camera (3D Cue Rotation)")
                                 .foregroundColor(.white)
                                 .padding(),
                             alignment: .top
@@ -1107,19 +1125,28 @@ struct ContentView: View {
                                     if simulation.showCueValue == 1 && !simulation.shooting {
                                         if initialTouchThird == nil {
                                             initialTouchThird = value.startLocation
-                                            initialCueAngleThird = simulation.cueAngle
+                                            initialCueYawThird = simulation.cue3DRotate.x
+                                            initialCuePitchThird = simulation.cue3DRotate.y
                                         }
                                         guard let start = initialTouchThird else { return }
 
                                         let deltaX = Float(value.location.x - start.x)
+                                        let deltaY = Float(value.location.y - start.y)
                                         let sensitivity: Float = 0.01
-                                        let newAngle = initialCueAngleThird + deltaX * sensitivity
-                                        simulation.cueAngle = max(-Float.pi / 2, min(Float.pi / 2, newAngle))
+
+                                        // Yaw changes with X movement
+                                        let newYaw = initialCueYawThird + deltaX * sensitivity
+                                        // Pitch changes with Y movement
+                                        let newPitch = initialCuePitchThird - deltaY * sensitivity
+
+                                        // Example clamp for pitch so it doesn't flip over
+                                        let clampedPitch = max(-0.8, min(0.8, newPitch))
+
+                                        simulation.cue3DRotate = SIMD2<Float>(newYaw, clampedPitch)
                                     }
                                 }
                                 .onEnded { _ in
                                     initialTouchThird = nil
-                                    initialCueAngleThird = 0.0
                                 }
                         )
                 }
@@ -1127,6 +1154,7 @@ struct ContentView: View {
             }
         }
         .onAppear {
+            // Simple game loop
             let timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { _ in
                 simulation.time += 1.0/60.0
                 simulation.updatePhysics(deltaTime: 1.0/60.0)
@@ -1136,7 +1164,7 @@ struct ContentView: View {
     }
 }
 
-// MARK: - SwiftUI Preview
+// MARK: - Preview
 struct ContentView_Previews: PreviewProvider {
     static var previews: some View {
         ContentView()
