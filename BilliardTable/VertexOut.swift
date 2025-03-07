@@ -809,7 +809,7 @@ final class BilliardSimulation: ObservableObject {
         // Update vectors
         var cueDir = SIMD3<Float>(0, 0, -1)
         cueDir = rotateX(cueDir, cue3DRotate.y)
-        cueDir = rotateY(cueDir, cue3DRotate.x)
+        cueDir = rotateY(cueDir, -cue3DRotate.x) // Negate yaw to fix mirroring
         let strikeVector = normalize(cueDir)
         strikeVectorBuffer.contents().bindMemory(to: SIMD3<Float>.self, capacity: 1)[0] = strikeVector
 
@@ -819,7 +819,7 @@ final class BilliardSimulation: ObservableObject {
         let ballDirection = normalize(cueDir + angularVelocity * 0.1) // Simplified spin effect
         ballDirectionVectorBuffer.contents().bindMemory(to: SIMD3<Float>.self, capacity: 1)[0] = ballDirection
     }
-    
+
     func rotateX(_ vector: SIMD3<Float>, _ angle: Float) -> SIMD3<Float> {
         let cosA = cos(angle)
         let sinA = sin(angle)
@@ -829,7 +829,7 @@ final class BilliardSimulation: ObservableObject {
             vector.y * sinA + vector.z * cosA
         )
     }
-    
+
     func rotateY(_ vector: SIMD3<Float>, _ angle: Float) -> SIMD3<Float> {
         let cosA = cos(angle)
         let sinA = sin(angle)
@@ -843,7 +843,7 @@ final class BilliardSimulation: ObservableObject {
     private func applyCueStrike() {
         var cueDir = SIMD3<Float>(0, 0, -1)
         cueDir = rotateX(cueDir, cue3DRotate.y)
-        cueDir = rotateY(cueDir, cue3DRotate.x)
+        cueDir = rotateY(cueDir, -cue3DRotate.x) // Negate yaw to fix mirroring
         let cueDir2D = normalize(SIMD2<Float>(cueDir.x, cueDir.z))
 
         let baseSpeed: Float = 20.0
@@ -891,7 +891,7 @@ final class BilliardSimulation: ObservableObject {
             let stationaryDistance: Float = 2.5
             var offset = SIMD3<Float>(0, 0.7, stationaryDistance)
             offset = rotateX(offset, cue3DRotate.y)
-            offset = rotateY(offset, cue3DRotate.x)
+            offset = rotateY(offset, -cue3DRotate.x) // Match cue orientation
             cameraPosition = cameraTarget + offset
         } else {
             let forward = simd_normalize(SIMD3<Float>(whiteBall.velocity.x, 0, whiteBall.velocity.y))
@@ -931,7 +931,7 @@ final class BilliardSimulation: ObservableObject {
             let stationaryDistance: Float = 7.0
             var offset = SIMD3<Float>(0, 0.7, stationaryDistance)
             offset = rotateX(offset, cue3DRotate.y)
-            offset = rotateY(offset, cue3DRotate.x)
+            offset = rotateY(offset, -cue3DRotate.x) // Match cue orientation
             cameraPosition = cameraTarget + offset
         } else {
             let forward = simd_normalize(SIMD3<Float>(whiteBall.velocity.x, 0, whiteBall.velocity.y))
@@ -1143,7 +1143,7 @@ struct ContentView: View {
                                         let deltaX = Float(value.location.x - start.x)
                                         let deltaY = Float(value.location.y - start.y)
                                         let sensitivity: Float = 0.01
-                                        let newYaw = initialCueYawThird + deltaX * sensitivity
+                                        let newYaw = initialCueYawThird - deltaX * sensitivity // Invert deltaX for natural rotation
                                         let newPitch = initialCuePitchThird - deltaY * sensitivity
                                         let clampedPitch = max(-0.8, min(0.8, newPitch))
                                         simulation.cue3DRotate = SIMD2<Float>(newYaw, clampedPitch)
