@@ -651,7 +651,7 @@ final class BilliardSimulation: ObservableObject {
                 shooting = true
             }
             cueOffset -= cueStrikeSpeed * deltaTime
-            if cueOffset <= 0.0 {
+            if (cueOffset <= 0.0) {
                 cueOffset = 0.0
                 applyCueStrike()
                 shooting = false
@@ -809,14 +809,15 @@ final class BilliardSimulation: ObservableObject {
         // Update vectors
         var cueDir = SIMD3<Float>(0, 0, -1)
         cueDir = rotateX(cueDir, cue3DRotate.y)
-        cueDir = rotateY(cueDir, -cue3DRotate.x) // Negate yaw to fix mirroring
+        cueDir = rotateY(cueDir, -cue3DRotate.x)
         let strikeVector = normalize(cueDir)
         strikeVectorBuffer.contents().bindMemory(to: SIMD3<Float>.self, capacity: 1)[0] = strikeVector
 
         let tipOffset3D = SIMD3<Float>(cueTipOffset.x, -cueTipOffset.y, 0)
-        let spinFactor: Float = 5.0 / (2.0 * ballRadius)
+        let spinFactor: Float = 15.0 / (2.0 * ballRadius) // Increased for more noticeable spin
         let angularVelocity = cross(cueDir, tipOffset3D) * spinFactor
-        let ballDirection = normalize(cueDir + angularVelocity * 0.1) // Simplified spin effect
+        let spinEffect = cross(angularVelocity, SIMD3<Float>(cueDir.x, 0, cueDir.z)) * 0.5 // Amplify spin effect on trajectory
+        let ballDirection = normalize(cueDir + spinEffect)
         ballDirectionVectorBuffer.contents().bindMemory(to: SIMD3<Float>.self, capacity: 1)[0] = ballDirection
     }
 
@@ -843,17 +844,23 @@ final class BilliardSimulation: ObservableObject {
     private func applyCueStrike() {
         var cueDir = SIMD3<Float>(0, 0, -1)
         cueDir = rotateX(cueDir, cue3DRotate.y)
-        cueDir = rotateY(cueDir, -cue3DRotate.x) // Negate yaw to fix mirroring
+        cueDir = rotateY(cueDir, -cue3DRotate.x)
         let cueDir2D = normalize(SIMD2<Float>(cueDir.x, cueDir.z))
 
         let baseSpeed: Float = 20.0
         let velocityScale = 0.3 + 1.7 * powerAtRelease
-        balls[0].velocity = cueDir2D * baseSpeed * velocityScale
 
+        // Apply spin based on cue tip offset
         let tipOffset3D = SIMD3<Float>(cueTipOffset.x, -cueTipOffset.y, 0)
-        let spinFactor: Float = 5.0 / (2.0 * ballRadius)
-        let angularVelocity = cross(cueDir, tipOffset3D) * spinFactor * baseSpeed * velocityScale
+        let spinFactor: Float = 15.0 / (2.0 * ballRadius) // Increased for more noticeable spin
+        let angularVelocity = cross(cueDir, tipOffset3D) * spinFactor * velocityScale
         balls[0].angularVelocity = angularVelocity
+
+        // Adjust the ball's velocity to account for spin-induced trajectory
+        let spinEffect = cross(angularVelocity, SIMD3<Float>(cueDir.x, 0, cueDir.z)) * 0.5
+        let adjustedDir = normalize(cueDir + spinEffect)
+        let adjustedDir2D = normalize(SIMD2<Float>(adjustedDir.x, adjustedDir.z))
+        balls[0].velocity = adjustedDir2D * baseSpeed * velocityScale
 
         powerAtRelease = 0.0
     }
@@ -891,7 +898,7 @@ final class BilliardSimulation: ObservableObject {
             let stationaryDistance: Float = 2.5
             var offset = SIMD3<Float>(0, 0.7, stationaryDistance)
             offset = rotateX(offset, cue3DRotate.y)
-            offset = rotateY(offset, -cue3DRotate.x) // Match cue orientation
+            offset = rotateY(offset, -cue3DRotate.x)
             cameraPosition = cameraTarget + offset
         } else {
             let forward = simd_normalize(SIMD3<Float>(whiteBall.velocity.x, 0, whiteBall.velocity.y))
@@ -931,7 +938,7 @@ final class BilliardSimulation: ObservableObject {
             let stationaryDistance: Float = 7.0
             var offset = SIMD3<Float>(0, 0.7, stationaryDistance)
             offset = rotateX(offset, cue3DRotate.y)
-            offset = rotateY(offset, -cue3DRotate.x) // Match cue orientation
+            offset = rotateY(offset, -cue3DRotate.x)
             cameraPosition = cameraTarget + offset
         } else {
             let forward = simd_normalize(SIMD3<Float>(whiteBall.velocity.x, 0, whiteBall.velocity.y))
@@ -1143,7 +1150,7 @@ struct ContentView: View {
                                         let deltaX = Float(value.location.x - start.x)
                                         let deltaY = Float(value.location.y - start.y)
                                         let sensitivity: Float = 0.01
-                                        let newYaw = initialCueYawThird - deltaX * sensitivity // Invert deltaX for natural rotation
+                                        let newYaw = initialCueYawThird - deltaX * sensitivity
                                         let newPitch = initialCuePitchThird - deltaY * sensitivity
                                         let clampedPitch = max(-0.8, min(0.8, newPitch))
                                         simulation.cue3DRotate = SIMD2<Float>(newYaw, clampedPitch)
