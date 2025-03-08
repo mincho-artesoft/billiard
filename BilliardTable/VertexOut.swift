@@ -871,15 +871,20 @@ final class BilliardSimulation: ObservableObject {
         var cameraPosition = SIMD3<Float>(0, 2.0, 0)
         var cameraTarget = SIMD3<Float>(whiteBall.position.x, 0.05, whiteBall.position.y)
         let speed = simd_length(whiteBall.velocity)
+
         if speed < 0.01 {
-            // If stationary, position camera behind the ball using the cue direction
+            // If stationary, position camera behind the ball using the cue's yaw only
             let stationaryDistance: Float = 2.5
-            var offset = SIMD3<Float>(0, 0.7, stationaryDistance)
-            // The pitch is applied first
-            offset = rotateX(offset, cue3DRotate.y)
-            // The yaw is applied second
+            var offset = SIMD3<Float>(0, 0, stationaryDistance) // Start with offset along -Z
+
+            // Apply yaw (Y-axis rotation) only, not pitch
             offset = rotateY(offset, -cue3DRotate.x)
+
+            // Position the camera relative to the white ball
             cameraPosition = cameraTarget + offset
+
+            // Set a fixed height with slight elevation, looking slightly downward
+            cameraPosition.y = 0.7 // Fixed height above the table, independent of cue pitch
         } else {
             // If rolling, follow behind the ball
             let forward = simd_normalize(SIMD3<Float>(whiteBall.velocity.x, 0, whiteBall.velocity.y))
@@ -938,14 +943,13 @@ final class BilliardSimulation: ObservableObject {
             // Position the camera relative to the white ball, following the cue's back end
             cameraPosition = cameraTarget + offset
 
-            // Adjust the vertical position to align with the cue's back end more naturally
-            // The cue's height is at y = 0.05 (ball center) + small offset; camera should look slightly down
+            // Adjust the vertical position to align with the cue's back end
             let cueBaseHeight: Float = 0.05 // Cue height at the ball
             let cueAngleVertical = cue3DRotate.y // Pitch angle
             let verticalAdjustment = sin(cueAngleVertical) * stationaryDistance
             cameraPosition.y = cueBaseHeight + verticalAdjustment + 0.7 // Add slight elevation
         } else {
-            // If rolling, follow behind more distantly (unchanged behavior)
+            // If rolling, follow behind more distantly
             let forward = simd_normalize(SIMD3<Float>(whiteBall.velocity.x, 0, whiteBall.velocity.y))
             cameraPosition = cameraTarget - (forward * 8.0)
             cameraPosition.y += 1.0
