@@ -136,7 +136,8 @@ float3 showScene(float3 ro, float3 rd,
 
         // Table geometry
         float dSurface = prBoxDf(p, float3(hIn.x, 0.4, hIn.y));
-        float3 pb = p; pb.y -= -0.6;
+        float3 pb = p; 
+        pb.y -= -0.6;
         float dBorder = prRoundBoxDf(pb, float3(hIn.x + 0.6, 0.5, hIn.y + 0.6), 0.2);
         float dTable = max(dBorder, -dSurface);
 
@@ -810,6 +811,7 @@ final class BilliardSimulation: ObservableObject {
 
     private func applyCueStrike() {
         var cueDir = SIMD3<Float>(0, 0, -1)
+        // Apply pitch first, then yaw
         cueDir = rotateX(cueDir, cue3DRotate.y)
         cueDir = rotateY(cueDir, -cue3DRotate.x)
         let cueDir2D = normalize(SIMD2<Float>(cueDir.x, cueDir.z))
@@ -819,7 +821,7 @@ final class BilliardSimulation: ObservableObject {
 
         // Calculate spin based on cue tip offset
         let tipOffset3D = SIMD3<Float>(cueTipOffset.x, -cueTipOffset.y, 0)
-        let spinFactor: Float = 15.0 / (2.0 * ballRadius) // a bit high for demonstration
+        let spinFactor: Float = 15.0 / (2.0 * ballRadius)
         let angularVelocity = cross(cueDir, tipOffset3D) * spinFactor * velocityScale
         balls[0].angularVelocity = angularVelocity
 
@@ -873,7 +875,9 @@ final class BilliardSimulation: ObservableObject {
             // If stationary, position camera behind the ball using the cue direction
             let stationaryDistance: Float = 2.5
             var offset = SIMD3<Float>(0, 0.7, stationaryDistance)
+            // The pitch is applied first
             offset = rotateX(offset, cue3DRotate.y)
+            // The yaw is applied second
             offset = rotateY(offset, -cue3DRotate.x)
             cameraPosition = cameraTarget + offset
         } else {
@@ -920,15 +924,28 @@ final class BilliardSimulation: ObservableObject {
         var cameraPosition = SIMD3<Float>(0, 2.0, 0)
         var cameraTarget = SIMD3<Float>(whiteBall.position.x, 0.05, whiteBall.position.y)
         let speed = simd_length(whiteBall.velocity)
+
         if speed < 0.01 {
-            // If stationary, place camera further behind
+            // If stationary, place camera behind the cue stick, following its 3D orientation
             let stationaryDistance: Float = 7.0
-            var offset = SIMD3<Float>(0, 0.7, stationaryDistance)
+            var offset = SIMD3<Float>(0, 0, stationaryDistance) // Start with offset along -Z (behind the cue)
+
+            // Apply pitch (X-axis rotation) first
             offset = rotateX(offset, cue3DRotate.y)
+            // Apply yaw (Y-axis rotation) second
             offset = rotateY(offset, -cue3DRotate.x)
+
+            // Position the camera relative to the white ball, following the cue's back end
             cameraPosition = cameraTarget + offset
+
+            // Adjust the vertical position to align with the cue's back end more naturally
+            // The cue's height is at y = 0.05 (ball center) + small offset; camera should look slightly down
+            let cueBaseHeight: Float = 0.05 // Cue height at the ball
+            let cueAngleVertical = cue3DRotate.y // Pitch angle
+            let verticalAdjustment = sin(cueAngleVertical) * stationaryDistance
+            cameraPosition.y = cueBaseHeight + verticalAdjustment + 0.7 // Add slight elevation
         } else {
-            // If rolling, follow behind more distantly
+            // If rolling, follow behind more distantly (unchanged behavior)
             let forward = simd_normalize(SIMD3<Float>(whiteBall.velocity.x, 0, whiteBall.velocity.y))
             cameraPosition = cameraTarget - (forward * 8.0)
             cameraPosition.y += 1.0
@@ -1080,7 +1097,7 @@ struct ContentView: View {
                 .edgesIgnoringSafeArea(.all)
                 .overlay(Text("Orbiting Camera").foregroundColor(.white).padding(), alignment: .top)
                 .gesture(
-                    // Pulling the cue by tapping/dragging anywhere on main view
+                    // Pull the cue by tapping/dragging anywhere on the main view
                     DragGesture(minimumDistance: 0)
                         .onChanged { _ in simulation.isTouching = true }
                         .onEnded { _ in simulation.isTouching = false }
@@ -1094,11 +1111,13 @@ struct ContentView: View {
                     BehindBallMetalView(simulation: simulation)
                         .frame(width: UIScreen.main.bounds.width / 2,
                                height: UIScreen.main.bounds.width / 2)
-                        .background(GeometryReader { geo in
-                            Color.clear
-                                .onAppear { viewSizeBehind = geo.size }
-                                .onChange(of: geo.size) { newSize in viewSizeBehind = newSize }
-                        })
+                        .background(
+                            GeometryReader { geo in
+                                Color.clear
+                                    .onAppear { viewSizeBehind = geo.size }
+                                    .onChange(of: geo.size) { newSize in viewSizeBehind = newSize }
+                            }
+                        )
                         .overlay(Text("Behind-Ball Camera").foregroundColor(.white).padding(), alignment: .top)
                         .gesture(
                             // Adjust tip offset by dragging inside this mini-view
@@ -1139,11 +1158,13 @@ struct ContentView: View {
                     ThirdBallMetalView(simulation: simulation)
                         .frame(width: UIScreen.main.bounds.width / 2,
                                height: UIScreen.main.bounds.width / 2)
-                        .background(GeometryReader { geo in
-                            Color.clear
-                                .onAppear { viewSizeThird = geo.size }
-                                .onChange(of: geo.size) { newSize in viewSizeThird = newSize }
-                        })
+                        .background(
+                            GeometryReader { geo in
+                                Color.clear
+                                    .onAppear { viewSizeThird = geo.size }
+                                    .onChange(of: geo.size) { newSize in viewSizeThird = newSize }
+                            }
+                        )
                         .overlay(Text("Third-Ball Camera (3D Cue Rotation)").foregroundColor(.white).padding(),
                                  alignment: .top)
                         .gesture(
