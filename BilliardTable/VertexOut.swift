@@ -171,12 +171,12 @@ float3 showScene(float3 ro, float3 rd,
 
         // Updated pocket positions
         float2 pocketPositions[6] = {
-            float2(-7.6,  13.6),  // Top-left corner (foot rail)
-            float2( 7.6,  13.6),  // Top-right corner (foot rail)
-            float2(-7.6,   0.0),  // Left side pocket (corrected)
-            float2( 7.6,   0.0),  // Right side pocket (corrected)
-            float2(-7.6, -13.6),  // Bottom-left corner (head rail)
-            float2( 7.6, -13.6)   // Bottom-right corner (head rail)
+            float2(-8,  14),  // Top-left corner (foot rail)
+            float2( 8,  14),  // Top-right corner (foot rail)
+            float2(-8,   0.0),  // Left side pocket (corrected)
+            float2( 8,   0.0),  // Right side pocket (corrected)
+            float2(-8, -14),  // Bottom-left corner (head rail)
+            float2( 8, -14)   // Bottom-right corner (head rail)
         };
 
         float minPocketDist = pocketRadius + 0.1;
@@ -322,12 +322,12 @@ float3 showScene(float3 ro, float3 rd,
             float ambient = 0.3;
 
             float2 pocketPositions[6] = {
-                float2(-7.6,  13.6),
-                float2( 7.6,  13.6),
-                float2(-7.6,   0.0),  // Corrected
-                float2( 7.6,   0.0),  // Corrected
-                float2(-7.6, -13.6),
-                float2( 7.6, -13.6)
+                float2(-8,  14),
+                float2( 8,  14),
+                float2(-8,   0.0),  // Corrected
+                float2( 8,   0.0),  // Corrected
+                float2(-8, -14),
+                float2( 8, -14)
             };
             bool inPocket = false;
             for (int j = 0; j < 6; j++) {
@@ -648,12 +648,12 @@ final class BilliardSimulation: ObservableObject {
 
     private func checkPocket(pos: SIMD2<Float>, height: Float) -> Bool {
         let pocketPositions: [SIMD2<Float>] = [
-            SIMD2<Float>(-7.6,  13.6),  // Top-left corner (foot rail)
-            SIMD2<Float>( 7.6,  13.6),  // Top-right corner (foot rail)
-            SIMD2<Float>(-7.6,   0.0),  // Left side pocket (corrected)
-            SIMD2<Float>( 7.6,   0.0),  // Right side pocket (corrected)
-            SIMD2<Float>(-7.6, -13.6),  // Bottom-left corner (head rail)
-            SIMD2<Float>( 7.6, -13.6)   // Bottom-right corner (head rail)
+            SIMD2<Float>(-8,  14),  // Top-left corner (foot rail)
+            SIMD2<Float>( 8,  14),  // Top-right corner (foot rail)
+            SIMD2<Float>(-8,   0.0),  // Left side pocket (corrected)
+            SIMD2<Float>( 8,   0.0),  // Right side pocket (corrected)
+            SIMD2<Float>(-8, -14),  // Bottom-left corner (head rail)
+            SIMD2<Float>( 8, -14)   // Bottom-right corner (head rail)
         ]
         for p in pocketPositions {
             if simd_length(pos - p) < pocketRadius && height <= 0.01 + ballRadius {
