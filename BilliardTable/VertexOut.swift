@@ -15,7 +15,7 @@ float hash(float2 p) {
 float noise(float2 p) {
     float2 i = floor(p);
     float2 f = fract(p);
-    float2 u = f * f * (3.0 - 2.0 * f); // Smoothstep
+    float2 u = f * f * (3.0 - 2.0 * f);
     float a = hash(i + float2(0.0, 0.0));
     float b = hash(i + float2(1.0, 0.0));
     float c = hash(i + float2(0.0, 1.0));
@@ -163,7 +163,7 @@ float3 showScene(float3 ro, float3 rd,
         float3 p = ro + rd * t;
 
         float dSurface = prBoxDf(p, float3(hIn.x, 0.4, hIn.y));
-        float3 pb = p; 
+        float3 pb = p;
         pb.y -= -0.6;
         float dBorder = prRoundBoxDf(pb, float3(hIn.x + 0.6, 0.5, hIn.y + 0.6), 0.2);
         float dTable = max(dBorder, -dSurface);
@@ -289,33 +289,26 @@ float3 showScene(float3 ro, float3 rd,
                 prBoxDf(p - eps.yyx, float3(hIn.x, 0.4, hIn.y))
             ));
 
-            // Procedural Felt Texture with Enhanced Color Variation and Shadows
-            float2 feltUV = p.xz * 0.5; // Scale for texture detail
-            float feltNoise = fbm(feltUV, 4); // Base noise for texture
-            float fiberDetail = noise(feltUV * 15.0); // Higher frequency for fine fibers
-            float shadowNoise = fbm(feltUV * 0.2, 3); // Low-frequency noise for shadows
+            float2 feltUV = p.xz * 0.5;
+            float feltNoise = fbm(feltUV, 4);
+            float fiberDetail = noise(feltUV * 15.0);
+            float shadowNoise = fbm(feltUV * 0.2, 3);
 
-            // Base felt color (green)
             float3 feltBaseColor = float3(0.1, 0.5, 0.2);
-            // Darker fibrous strands
             float3 fiberColor = float3(0.05, 0.3, 0.1);
-            // Mix base and fiber colors based on noise
             float fiberMix = smoothstep(0.6, 0.8, fiberDetail);
             float3 feltColor = mix(feltBaseColor, fiberColor, fiberMix);
-            // Additional color variation with base noise
             feltColor *= (0.7 + 0.3 * feltNoise);
 
-            // Perturb normal for fibrous bumpiness
             float3 feltNormal = n;
             float noiseGradX = fbm(feltUV + float2(0.01, 0.0), 4) - feltNoise;
             float noiseGradZ = fbm(feltUV + float2(0.0, 0.01), 4) - feltNoise;
-            feltNormal += float3(noiseGradX, 0.0, noiseGradZ) * 0.07; // Slightly increased perturbation
+            feltNormal += float3(noiseGradX, 0.0, noiseGradZ) * 0.07;
             feltNormal = normalize(feltNormal);
 
-            // Shadow effect
             float shadowFactor = smoothstep(0.3, 0.7, shadowNoise);
-            float shadowStrength = 0.4; // Adjust shadow intensity
-            float ambient = 0.3; // Minimum lighting level
+            float shadowStrength = 0.4;
+            float ambient = 0.3;
 
             float2 pocketCheck = float2(
                 abs(p.x) - (hIn.x - bWid + 0.03),
@@ -323,19 +316,18 @@ float3 showScene(float3 ro, float3 rd,
             );
             float pocketDist = length(pocketCheck);
             if (pocketDist < 0.53) {
-                col = float3(0.0); // Pocket color
+                col = float3(0.0);
             } else if (max(abs(p.x) - hIn.x, abs(p.z) - hIn.y) < 0.3) {
-                col = float3(0.1, 0.5, 0.3); // Cushion color
+                col = float3(0.1, 0.5, 0.3);
             } else {
-                col = feltColor; // Apply procedural felt texture
+                col = feltColor;
             }
 
             float diff = max(dot(feltNormal, normalize(lightPos - p)), 0.0);
             float3 r = reflect(rd, feltNormal);
             float spec = pow(max(dot(r, normalize(lightPos - p)), 0.0), 16.0);
-            // Apply lighting with shadow
             col *= (ambient + (1.0 - ambient) * diff * (1.0 - shadowStrength * (1.0 - shadowFactor)));
-            col += float3(0.15) * spec * (0.5 + 0.5 * feltNoise); // Reduced specular intensity
+            col += float3(0.15) * spec * (0.5 + 0.5 * feltNoise);
         }
     }
 
@@ -507,8 +499,10 @@ final class BilliardSimulation: ObservableObject {
 
     private let ballRadius: Float = 0.47
     private let tableWidth: Float = 7.6
-    private let tableLength: Float = 13.3
+    private let tableLength: Float = 13.6
     private let pocketRadius: Float = 0.53
+    private let cushionEdgeX: Float = 7.6
+    private let cushionEdgeZ: Float = 13.6
     private let cuePullSpeed: Float = 1.0
     private let cueStrikeSpeed: Float = 5.0
     private let maxCueOffset: Float = 2.0
@@ -516,9 +510,9 @@ final class BilliardSimulation: ObservableObject {
     private let ballMass: Float = 0.17
     private let momentOfInertia: Float = 0.4 * 0.17 * 0.47 * 0.47
     private let gravity: Float = 9.81
-    private let frictionKinetic: Float = 0.25    // Increased for quicker sliding stop
-    private let frictionRolling: Float = 0.015   // Increased for realistic rolling decay
-    private let frictionSpinDecay: Float = 8.0   // Increased for faster spin decay
+    private let frictionKinetic: Float = 0.25
+    private let frictionRolling: Float = 0.015
+    private let frictionSpinDecay: Float = 8.0
     private let restitutionBall: Float = 0.95
     private let restitutionCushion: Float = 0.8
     private let ballFriction: Float = 0.05
@@ -632,12 +626,12 @@ final class BilliardSimulation: ObservableObject {
 
     private func checkPocket(pos: SIMD2<Float>, height: Float) -> Bool {
         let pocketPositions: [SIMD2<Float>] = [
-            SIMD2<Float>(-tableWidth + ballRadius, -tableLength + ballRadius), // Bottom-left corner
-            SIMD2<Float>( tableWidth - ballRadius, -tableLength + ballRadius), // Bottom-right corner
-            SIMD2<Float>(-tableWidth + ballRadius, 0.0),                      // Middle-left
-            SIMD2<Float>( tableWidth - ballRadius, 0.0),                      // Middle-right
-            SIMD2<Float>(-tableWidth + ballRadius,  tableLength - ballRadius), // Top-left corner
-            SIMD2<Float>( tableWidth - ballRadius,  tableLength - ballRadius), // Top-right corner
+            SIMD2<Float>(-7.526, -13.226), // Bottom-left corner
+            SIMD2<Float>( 7.526, -13.226), // Bottom-right corner
+            SIMD2<Float>(-7.37,  0.0),     // Middle-left
+            SIMD2<Float>( 7.37,  0.0),     // Middle-right
+            SIMD2<Float>(-7.526,  13.226), // Top-left corner
+            SIMD2<Float>( 7.526,  13.226), // Top-right corner
         ]
         for p in pocketPositions {
             if simd_length(pos - p) < pocketRadius && height <= 0.01 + ballRadius {
@@ -725,7 +719,6 @@ final class BilliardSimulation: ObservableObject {
                         ball.angularVelocity += alpha * dt
                     }
 
-                    // Enhanced spin decay
                     if simd_length(w) > 0 {
                         let wMag = simd_length(w)
                         let decay = -simd_normalize(w) * frictionSpinDecay * dt
@@ -746,17 +739,17 @@ final class BilliardSimulation: ObservableObject {
                 }
 
                 // Cushion collisions
-                if abs(ball.position.x) > tableWidth - ballRadius && ball.height <= 0.01 + ballRadius {
-                    ball.position.x = (ball.position.x > 0) ? (tableWidth - ballRadius)
-                                                            : -(tableWidth - ballRadius)
+                if abs(ball.position.x) > cushionEdgeX - ballRadius && ball.height <= 0.01 + ballRadius {
+                    ball.position.x = (ball.position.x > 0) ? (cushionEdgeX - ballRadius)
+                                                            : -(cushionEdgeX - ballRadius)
                     ball.velocity.x = -ball.velocity.x * restitutionCushion
                     let spinChange = -ball.angularVelocity.z * 0.5
                     ball.angularVelocity.z += spinChange
                     ball.angularVelocity.y *= 0.6
                 }
-                if abs(ball.position.y) > tableLength - ballRadius && ball.height <= 0.01 + ballRadius {
-                    ball.position.y = (ball.position.y > 0) ? (tableLength - ballRadius)
-                                                            : -(tableLength - ballRadius)
+                if abs(ball.position.y) > cushionEdgeZ - ballRadius && ball.height <= 0.01 + ballRadius {
+                    ball.position.y = (ball.position.y > 0) ? (cushionEdgeZ - ballRadius)
+                                                            : -(cushionEdgeZ - ballRadius)
                     ball.velocity.y = -ball.velocity.y * restitutionCushion
                     let spinChange = ball.angularVelocity.x * 0.5
                     ball.angularVelocity.x += spinChange
@@ -868,11 +861,11 @@ final class BilliardSimulation: ObservableObject {
         cueDir = rotateY(cueDir, -cue3DRotate.x)
         let cueDir2D = normalize(SIMD2<Float>(cueDir.x, cueDir.z))
 
-        let baseSpeed: Float = 15.0  // Reduced base speed for more realistic motion
+        let baseSpeed: Float = 15.0
         let velocityScale = 0.5 + 1.5 * powerAtRelease
 
         let tipOffset3D = SIMD3<Float>(cueTipOffset.x, -cueTipOffset.y, 0)
-        let spinFactor: Float = 10.0 / (2.0 * ballRadius)  // Reduced spin factor
+        let spinFactor: Float = 10.0 / (2.0 * ballRadius)
         let angularVelocity = cross(cueDir, tipOffset3D) * spinFactor * velocityScale
         balls[0].angularVelocity = angularVelocity
 
