@@ -7,6 +7,35 @@ let metalShader = """
 #include <metal_stdlib>
 using namespace metal;
 
+// MARK: - Noise Functions for Procedural Texture
+float hash(float2 p) {
+    return fract(sin(dot(p, float2(127.1, 311.7))) * 43758.5453);
+}
+
+float noise(float2 p) {
+    float2 i = floor(p);
+    float2 f = fract(p);
+    float2 u = f * f * (3.0 - 2.0 * f); // Smoothstep
+    float a = hash(i + float2(0.0, 0.0));
+    float b = hash(i + float2(1.0, 0.0));
+    float c = hash(i + float2(0.0, 1.0));
+    float d = hash(i + float2(1.0, 1.0));
+    return mix(a, b, u.x) + (c - a) * u.y * (1.0 - u.x) + (d - b) * u.x * u.y;
+}
+
+float fbm(float2 p, int octaves) {
+    float v = 0.0;
+    float a = 0.5;
+    float2 shift = float2(100.0);
+    for (int i = 0; i < octaves; ++i) {
+        v += a * noise(p);
+        p = p * 2.0 + shift;
+        a *= 0.5;
+    }
+    return v;
+}
+
+// MARK: - Existing Utility Functions
 struct VertexOut {
     float4 position [[position]];
     float2 uv;
@@ -259,23 +288,54 @@ float3 showScene(float3 ro, float3 rd,
                 prBoxDf(p + eps.yyx, float3(hIn.x, 0.4, hIn.y)) -
                 prBoxDf(p - eps.yyx, float3(hIn.x, 0.4, hIn.y))
             ));
+
+            // Procedural Felt Texture with Enhanced Color Variation and Shadows
+            float2 feltUV = p.xz * 0.5; // Scale for texture detail
+            float feltNoise = fbm(feltUV, 4); // Base noise for texture
+            float fiberDetail = noise(feltUV * 15.0); // Higher frequency for fine fibers
+            float shadowNoise = fbm(feltUV * 0.2, 3); // Low-frequency noise for shadows
+
+            // Base felt color (green)
+            float3 feltBaseColor = float3(0.1, 0.5, 0.2);
+            // Darker fibrous strands
+            float3 fiberColor = float3(0.05, 0.3, 0.1);
+            // Mix base and fiber colors based on noise
+            float fiberMix = smoothstep(0.6, 0.8, fiberDetail);
+            float3 feltColor = mix(feltBaseColor, fiberColor, fiberMix);
+            // Additional color variation with base noise
+            feltColor *= (0.7 + 0.3 * feltNoise);
+
+            // Perturb normal for fibrous bumpiness
+            float3 feltNormal = n;
+            float noiseGradX = fbm(feltUV + float2(0.01, 0.0), 4) - feltNoise;
+            float noiseGradZ = fbm(feltUV + float2(0.0, 0.01), 4) - feltNoise;
+            feltNormal += float3(noiseGradX, 0.0, noiseGradZ) * 0.07; // Slightly increased perturbation
+            feltNormal = normalize(feltNormal);
+
+            // Shadow effect
+            float shadowFactor = smoothstep(0.3, 0.7, shadowNoise);
+            float shadowStrength = 0.4; // Adjust shadow intensity
+            float ambient = 0.3; // Minimum lighting level
+
             float2 pocketCheck = float2(
                 abs(p.x) - (hIn.x - bWid + 0.03),
                 fmod(p.z + 0.5 * (hIn.y - bWid + 0.03), (hIn.y - bWid + 0.03)) - 0.5 * (hIn.y - bWid + 0.03)
             );
             float pocketDist = length(pocketCheck);
             if (pocketDist < 0.53) {
-                col = float3(0.0);
+                col = float3(0.0); // Pocket color
             } else if (max(abs(p.x) - hIn.x, abs(p.z) - hIn.y) < 0.3) {
-                col = float3(0.1, 0.5, 0.3);
+                col = float3(0.1, 0.5, 0.3); // Cushion color
             } else {
-                col = float3(0.3, 0.1, 0.0);
+                col = feltColor; // Apply procedural felt texture
             }
-            float diff = max(dot(n, normalize(lightPos - p)), 0.0);
-            float3 r = reflect(rd, n);
+
+            float diff = max(dot(feltNormal, normalize(lightPos - p)), 0.0);
+            float3 r = reflect(rd, feltNormal);
             float spec = pow(max(dot(r, normalize(lightPos - p)), 0.0), 16.0);
-            col *= 0.3 + 0.7 * diff;
-            col += float3(0.2) * spec;
+            // Apply lighting with shadow
+            col *= (ambient + (1.0 - ambient) * diff * (1.0 - shadowStrength * (1.0 - shadowFactor)));
+            col += float3(0.15) * spec * (0.5 + 0.5 * feltNoise); // Reduced specular intensity
         }
     }
 
