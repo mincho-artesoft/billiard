@@ -147,7 +147,7 @@ float3 showScene(float3 ro, float3 rd,
         dTable = smoothMax(dTable, 0.53 - pocketDist, 0.01);
 
         float3 pc = p - float3(balls[0].position.x, balls[0].height, balls[0].position.y);
-        pc.y -= 0.05;
+        pc.y -= 0.01; // Adjusted to match new ball height
 
         float baseAngle = sin(time * 0.5) * 0.1;
         pc = rotateX(pc, cue3DRotate.y);
@@ -410,7 +410,7 @@ func quaternionMultiply(_ q1: SIMD4<Float>, _ q2: SIMD4<Float>) -> SIMD4<Float> 
 struct BallData {
     var position: SIMD2<Float>
     var velocity: SIMD2<Float>
-    var height: Float = 0.05
+    var height: Float = 0.01 // Adjusted to reduce gap
     var verticalVelocity: Float = 0.0
     var angularVelocity: SIMD3<Float>
     var quaternion: SIMD4<Float>
@@ -580,7 +580,7 @@ final class BilliardSimulation: ObservableObject {
             SIMD2<Float>( tableWidth - ballRadius,  tableLength - ballRadius),
         ]
         for p in pocketPositions {
-            if simd_length(pos - p) < pocketRadius && height <= 0.05 + ballRadius {
+            if simd_length(pos - p) < pocketRadius && height <= 0.01 + ballRadius {
                 return true
             }
         }
@@ -634,14 +634,14 @@ final class BilliardSimulation: ObservableObject {
 
                 ball.verticalVelocity -= gravity * dt
                 ball.height += ball.verticalVelocity * dt
-                if ball.height <= 0.05 {
-                    ball.height = 0.05
+                if ball.height <= 0.01 { // Adjusted to new height
+                    ball.height = 0.01
                     if ball.verticalVelocity < 0 {
                         ball.verticalVelocity = -ball.verticalVelocity * restitutionCushion
                     }
                 }
 
-                if ball.height <= 0.05 + 0.001 {
+                if ball.height <= 0.01 + 0.001 { // Adjusted threshold
                     let relativeVelocityAtContact = v - ballRadius * SIMD2<Float>(-w.z, w.x)
                     let sliding = simd_length(relativeVelocityAtContact) > 0.001
 
@@ -684,7 +684,7 @@ final class BilliardSimulation: ObservableObject {
                     ball.quaternion = normalize(ball.quaternion)
                 }
 
-                if abs(ball.position.x) > tableWidth - ballRadius && ball.height <= 0.05 + ballRadius {
+                if abs(ball.position.x) > tableWidth - ballRadius && ball.height <= 0.01 + ballRadius {
                     ball.position.x = (ball.position.x > 0) ? (tableWidth - ballRadius)
                                                             : -(tableWidth - ballRadius)
                     ball.velocity.x = -ball.velocity.x * restitutionCushion
@@ -692,7 +692,7 @@ final class BilliardSimulation: ObservableObject {
                     ball.angularVelocity.z += spinChange
                     ball.angularVelocity.y = -ball.angularVelocity.y * 0.7
                 }
-                if abs(ball.position.y) > tableLength - ballRadius && ball.height <= 0.05 + ballRadius {
+                if abs(ball.position.y) > tableLength - ballRadius && ball.height <= 0.01 + ballRadius {
                     ball.position.y = (ball.position.y > 0) ? (tableLength - ballRadius)
                                                             : -(tableLength - ballRadius)
                     ball.velocity.y = -ball.velocity.y * restitutionCushion
@@ -701,12 +701,12 @@ final class BilliardSimulation: ObservableObject {
                     ball.angularVelocity.y = -ball.angularVelocity.y * 0.7
                 }
 
-                if (i != 0 || ball.height <= 0.05 + ballRadius) && checkPocket(pos: ball.position, height: ball.height) {
+                if (i != 0 || ball.height <= 0.01 + ballRadius) && checkPocket(pos: ball.position, height: ball.height) {
                     ball.velocity = SIMD2<Float>(.infinity, .infinity)
                     ball.verticalVelocity = 0.0
                     ball.angularVelocity = .zero
                     ball.position = .zero
-                    ball.height = 0.05
+                    ball.height = 0.01
                 }
 
                 balls[i] = ball
@@ -723,7 +723,7 @@ final class BilliardSimulation: ObservableObject {
                     let heightDiff = abs(ball1.height - ball2.height)
                     let minCollisionHeight = 2.0 * ballRadius
 
-                    if dist < 2.0 * ballRadius && dist > 0 && (heightDiff < ballRadius || (ball1.height <= 0.05 + ballRadius && ball2.height <= 0.05 + ballRadius)) {
+                    if dist < 2.0 * ballRadius && dist > 0 && (heightDiff < ballRadius || (ball1.height <= 0.01 + ballRadius && ball2.height <= 0.01 + ballRadius)) {
                         let normal = delta / dist
                         let relativeVel = ball1.velocity - ball2.velocity
                         let impulse = simd_dot(relativeVel, normal)
@@ -912,7 +912,7 @@ final class BilliardSimulation: ObservableObject {
             offset = rotateX(offset, cue3DRotate.y)
             offset = rotateY(offset, -cue3DRotate.x)
             cameraPosition = cameraTarget + offset
-            let cueBaseHeight: Float = 0.05
+            let cueBaseHeight: Float = 0.01 // Adjusted to new height
             let cueAngleVertical = cue3DRotate.y
             let verticalAdjustment = sin(cueAngleVertical) * stationaryDistance
             cameraPosition.y = cueBaseHeight + verticalAdjustment + 0.7
