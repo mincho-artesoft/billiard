@@ -145,6 +145,7 @@ float3 showScene(float3 ro, float3 rd,
     const float bWid  = 0.4;
     const float2 hIn  = float2(hbLen, hbLen * 1.75) - bWid;
     const float PI    = 3.14159;
+    const float pocketRadius = 0.53;
 
     float3 col = float3(0.05, 0.05, 0.1);
     float t = 0.0;
@@ -168,12 +169,22 @@ float3 showScene(float3 ro, float3 rd,
         float dBorder = prRoundBoxDf(pb, float3(hIn.x + 0.6, 0.5, hIn.y + 0.6), 0.2);
         float dTable = max(dBorder, -dSurface);
 
-        float2 hInPocket = hIn - bWid + 0.03;
-        float3 q = p;
-        q.x = abs(q.x) - hInPocket.x;
-        q.z = fmod(q.z + 0.5 * hInPocket.y, hInPocket.y) - 0.5 * hInPocket.y;
-        float pocketDist = length(q.xz);
-        dTable = smoothMax(dTable, 0.53 - pocketDist, 0.01);
+        // Explicit pocket positions
+        float2 pocketPositions[6] = {
+            float2(-7.526, -13.226), // Bottom-left
+            float2( 7.526, -13.226), // Bottom-right
+            float2(-7.37,   0.0),    // Middle-left
+            float2( 7.37,   0.0),    // Middle-right
+            float2(-7.526,  13.226), // Top-left
+            float2( 7.526,  13.226)  // Top-right
+        };
+
+        float minPocketDist = pocketRadius + 0.1; // Initialize with a value larger than pocketRadius
+        for (int j = 0; j < 6; j++) {
+            float distToPocket = length(p.xz - pocketPositions[j]);
+            minPocketDist = min(minPocketDist, distToPocket);
+        }
+        dTable = smoothMax(dTable, pocketRadius - minPocketDist, 0.02);
 
         float3 pc = p - float3(balls[0].position.x, balls[0].height, balls[0].position.y);
         pc.y -= 0.01;
@@ -310,17 +321,28 @@ float3 showScene(float3 ro, float3 rd,
             float shadowStrength = 0.4;
             float ambient = 0.3;
 
-            float2 pocketCheck = float2(
-                abs(p.x) - (hIn.x - bWid + 0.03),
-                fmod(p.z + 0.5 * (hIn.y - bWid + 0.03), (hIn.y - bWid + 0.03)) - 0.5 * (hIn.y - bWid + 0.03)
-            );
-            float pocketDist = length(pocketCheck);
-            if (pocketDist < 0.53) {
-                col = float3(0.0);
-            } else if (max(abs(p.x) - hIn.x, abs(p.z) - hIn.y) < 0.3) {
-                col = float3(0.1, 0.5, 0.3);
-            } else {
-                col = feltColor;
+            float2 pocketPositions[6] = {
+                float2(-7.526, -13.226),
+                float2( 7.526, -13.226),
+                float2(-7.37,   0.0),
+                float2( 7.37,   0.0),
+                float2(-7.526,  13.226),
+                float2( 7.526,  13.226)
+            };
+            bool inPocket = false;
+            for (int j = 0; j < 6; j++) {
+                if (length(p.xz - pocketPositions[j]) < pocketRadius) {
+                    col = float3(0.0);
+                    inPocket = true;
+                    break;
+                }
+            }
+            if (!inPocket) {
+                if (max(abs(p.x) - hIn.x, abs(p.z) - hIn.y) < 0.3) {
+                    col = float3(0.1, 0.5, 0.3);
+                } else {
+                    col = feltColor;
+                }
             }
 
             float diff = max(dot(feltNormal, normalize(lightPos - p)), 0.0);
@@ -628,10 +650,10 @@ final class BilliardSimulation: ObservableObject {
         let pocketPositions: [SIMD2<Float>] = [
             SIMD2<Float>(-7.526, -13.226), // Bottom-left corner
             SIMD2<Float>( 7.526, -13.226), // Bottom-right corner
-            SIMD2<Float>(-7.37,  0.0),     // Middle-left
-            SIMD2<Float>( 7.37,  0.0),     // Middle-right
+            SIMD2<Float>(-7.37,   0.0),    // Middle-left
+            SIMD2<Float>( 7.37,   0.0),    // Middle-right
             SIMD2<Float>(-7.526,  13.226), // Top-left corner
-            SIMD2<Float>( 7.526,  13.226), // Top-right corner
+            SIMD2<Float>( 7.526,  13.226)  // Top-right corner
         ]
         for p in pocketPositions {
             if simd_length(pos - p) < pocketRadius && height <= 0.01 + ballRadius {
