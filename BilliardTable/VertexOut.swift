@@ -147,7 +147,7 @@ float3 showScene(float3 ro, float3 rd,
         dTable = smoothMax(dTable, 0.53 - pocketDist, 0.01);
 
         float3 pc = p - float3(balls[0].position.x, balls[0].height, balls[0].position.y);
-        pc.y -= 0.01; // Adjusted to match new ball height
+        pc.y -= 0.01;
 
         float baseAngle = sin(time * 0.5) * 0.1;
         pc = rotateX(pc, cue3DRotate.y);
@@ -410,7 +410,7 @@ func quaternionMultiply(_ q1: SIMD4<Float>, _ q2: SIMD4<Float>) -> SIMD4<Float> 
 struct BallData {
     var position: SIMD2<Float>
     var velocity: SIMD2<Float>
-    var height: Float = 0.01 // Adjusted to reduce gap
+    var height: Float = 0.01
     var verticalVelocity: Float = 0.0
     var angularVelocity: SIMD3<Float>
     var quaternion: SIMD4<Float>
@@ -456,9 +456,9 @@ final class BilliardSimulation: ObservableObject {
     private let ballMass: Float = 0.17
     private let momentOfInertia: Float = 0.4 * 0.17 * 0.47 * 0.47
     private let gravity: Float = 9.81
-    private let frictionKinetic: Float = 0.2
-    private let frictionRolling: Float = 0.01
-    private let frictionSpinDecay: Float = 5.0
+    private let frictionKinetic: Float = 0.25    // Increased for quicker sliding stop
+    private let frictionRolling: Float = 0.015   // Increased for realistic rolling decay
+    private let frictionSpinDecay: Float = 8.0   // Increased for faster spin decay
     private let restitutionBall: Float = 0.95
     private let restitutionCushion: Float = 0.8
     private let ballFriction: Float = 0.05
@@ -609,7 +609,7 @@ final class BilliardSimulation: ObservableObject {
         if !isTouching && hitTriggered {
             var allStopped = true
             for ball in balls {
-                if simd_length(ball.velocity) > 0.005 || abs(ball.verticalVelocity) > 0.005 || simd_length(ball.angularVelocity) > 0.1 {
+                if simd_length(ball.velocity) > 0.01 || abs(ball.verticalVelocity) > 0.01 || simd_length(ball.angularVelocity) > 0.05 {
                     allStopped = false
                     break
                 }
@@ -632,18 +632,20 @@ final class BilliardSimulation: ObservableObject {
                 let w = ball.angularVelocity
                 let vMag = simd_length(v)
 
+                // Gravity and vertical motion
                 ball.verticalVelocity -= gravity * dt
                 ball.height += ball.verticalVelocity * dt
-                if ball.height <= 0.01 { // Adjusted to new height
+                if ball.height <= 0.01 {
                     ball.height = 0.01
                     if ball.verticalVelocity < 0 {
                         ball.verticalVelocity = -ball.verticalVelocity * restitutionCushion
+                        if abs(ball.verticalVelocity) < 0.1 { ball.verticalVelocity = 0.0 }
                     }
                 }
 
-                if ball.height <= 0.01 + 0.001 { // Adjusted threshold
+                if ball.height <= 0.01 + 0.001 {
                     let relativeVelocityAtContact = v - ballRadius * SIMD2<Float>(-w.z, w.x)
-                    let sliding = simd_length(relativeVelocityAtContact) > 0.001
+                    let sliding = simd_length(relativeVelocityAtContact) > 0.02
 
                     if sliding {
                         let frictionDir = -simd_normalize(relativeVelocityAtContact)
@@ -653,8 +655,8 @@ final class BilliardSimulation: ObservableObject {
                         let torque = frictionForce * ballRadius
                         let alpha = torque / momentOfInertia * SIMD3<Float>(-frictionDir.y, 0, frictionDir.x)
                         ball.angularVelocity += alpha * dt
-                    } else {
-                        let frictionDir = (vMag > 0) ? -simd_normalize(v) : .zero
+                    } else if vMag > 0 {
+                        let frictionDir = -simd_normalize(v)
                         let frictionForce = frictionRolling * ballMass * gravity
                         let accel = frictionForce / ballMass * frictionDir
                         ball.velocity += accel * dt
@@ -663,13 +665,12 @@ final class BilliardSimulation: ObservableObject {
                         ball.angularVelocity += alpha * dt
                     }
 
-                    if w.y != 0 {
-                        let decay = frictionSpinDecay * (w.y > 0 ? -1 : 1)
-                        ball.angularVelocity.y += decay * dt
-                        if (w.y > 0 && ball.angularVelocity.y < 0) ||
-                           (w.y < 0 && ball.angularVelocity.y > 0) {
-                            ball.angularVelocity.y = 0
-                        }
+                    // Enhanced spin decay
+                    if simd_length(w) > 0 {
+                        let wMag = simd_length(w)
+                        let decay = -simd_normalize(w) * frictionSpinDecay * dt
+                        ball.angularVelocity += decay
+                        if dot(w + decay, w) <= 0 { ball.angularVelocity = .zero }
                     }
                 }
 
@@ -684,13 +685,14 @@ final class BilliardSimulation: ObservableObject {
                     ball.quaternion = normalize(ball.quaternion)
                 }
 
+                // Cushion collisions
                 if abs(ball.position.x) > tableWidth - ballRadius && ball.height <= 0.01 + ballRadius {
                     ball.position.x = (ball.position.x > 0) ? (tableWidth - ballRadius)
                                                             : -(tableWidth - ballRadius)
                     ball.velocity.x = -ball.velocity.x * restitutionCushion
                     let spinChange = -ball.angularVelocity.z * 0.5
                     ball.angularVelocity.z += spinChange
-                    ball.angularVelocity.y = -ball.angularVelocity.y * 0.7
+                    ball.angularVelocity.y *= 0.6
                 }
                 if abs(ball.position.y) > tableLength - ballRadius && ball.height <= 0.01 + ballRadius {
                     ball.position.y = (ball.position.y > 0) ? (tableLength - ballRadius)
@@ -698,9 +700,10 @@ final class BilliardSimulation: ObservableObject {
                     ball.velocity.y = -ball.velocity.y * restitutionCushion
                     let spinChange = ball.angularVelocity.x * 0.5
                     ball.angularVelocity.x += spinChange
-                    ball.angularVelocity.y = -ball.angularVelocity.y * 0.7
+                    ball.angularVelocity.y *= 0.6
                 }
 
+                // Pocket check
                 if (i != 0 || ball.height <= 0.01 + ballRadius) && checkPocket(pos: ball.position, height: ball.height) {
                     ball.velocity = SIMD2<Float>(.infinity, .infinity)
                     ball.verticalVelocity = 0.0
@@ -712,6 +715,7 @@ final class BilliardSimulation: ObservableObject {
                 balls[i] = ball
             }
 
+            // Ball collisions
             for i in 0..<15 {
                 for j in (i+1)..<16 {
                     var ball1 = balls[i]
@@ -721,7 +725,6 @@ final class BilliardSimulation: ObservableObject {
                     let delta = ball2.position - ball1.position
                     let dist = simd_length(delta)
                     let heightDiff = abs(ball1.height - ball2.height)
-                    let minCollisionHeight = 2.0 * ballRadius
 
                     if dist < 2.0 * ballRadius && dist > 0 && (heightDiff < ballRadius || (ball1.height <= 0.01 + ballRadius && ball2.height <= 0.01 + ballRadius)) {
                         let normal = delta / dist
@@ -756,8 +759,11 @@ final class BilliardSimulation: ObservableObject {
                 }
             }
 
+            // Stop small movements
             for i in 0..<16 {
-                if simd_length(balls[i].velocity) < 0.005 && abs(balls[i].verticalVelocity) < 0.005 && simd_length(balls[i].angularVelocity) < 0.1 {
+                let vMag = simd_length(balls[i].velocity)
+                let wMag = simd_length(balls[i].angularVelocity)
+                if vMag < 0.01 && abs(balls[i].verticalVelocity) < 0.01 && wMag < 0.05 {
                     balls[i].velocity = .zero
                     balls[i].verticalVelocity = 0.0
                     balls[i].angularVelocity = .zero
@@ -802,18 +808,18 @@ final class BilliardSimulation: ObservableObject {
         cueDir = rotateY(cueDir, -cue3DRotate.x)
         let cueDir2D = normalize(SIMD2<Float>(cueDir.x, cueDir.z))
 
-        let baseSpeed: Float = 20.0
-        let velocityScale = 0.3 + 1.7 * powerAtRelease
+        let baseSpeed: Float = 15.0  // Reduced base speed for more realistic motion
+        let velocityScale = 0.5 + 1.5 * powerAtRelease
 
         let tipOffset3D = SIMD3<Float>(cueTipOffset.x, -cueTipOffset.y, 0)
-        let spinFactor: Float = 15.0 / (2.0 * ballRadius)
+        let spinFactor: Float = 10.0 / (2.0 * ballRadius)  // Reduced spin factor
         let angularVelocity = cross(cueDir, tipOffset3D) * spinFactor * velocityScale
         balls[0].angularVelocity = angularVelocity
 
         let jumpFactor = -sin(cue3DRotate.y) * baseSpeed * velocityScale
         balls[0].verticalVelocity = jumpFactor > 0 ? jumpFactor : 0.0
 
-        let spinEffect = cross(angularVelocity, SIMD3<Float>(cueDir.x, 0, cueDir.z)) * 0.5
+        let spinEffect = cross(angularVelocity, SIMD3<Float>(cueDir.x, 0, cueDir.z)) * 0.3
         let adjustedDir = normalize(cueDir + spinEffect)
         let adjustedDir2D = normalize(SIMD2<Float>(adjustedDir.x, adjustedDir.z))
         balls[0].velocity = adjustedDir2D * baseSpeed * velocityScale
@@ -912,7 +918,7 @@ final class BilliardSimulation: ObservableObject {
             offset = rotateX(offset, cue3DRotate.y)
             offset = rotateY(offset, -cue3DRotate.x)
             cameraPosition = cameraTarget + offset
-            let cueBaseHeight: Float = 0.01 // Adjusted to new height
+            let cueBaseHeight: Float = 0.01
             let cueAngleVertical = cue3DRotate.y
             let verticalAdjustment = sin(cueAngleVertical) * stationaryDistance
             cameraPosition.y = cueBaseHeight + verticalAdjustment + 0.7
