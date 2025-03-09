@@ -289,61 +289,59 @@ float3 showScene(float3 ro, float3 rd,
                 prBoxDf(p - eps.yyx, float3(hIn.x, 0.4, hIn.y))
             ));
 
+            // Procedural Felt Texture with Enhanced Color Variation and Shadows
+            float2 feltUV = p.xz * 0.5; // Scale for texture detail
+            float feltNoise = fbm(feltUV, 4); // Base noise for texture
+            float fiberDetail = noise(feltUV * 15.0); // Higher frequency for fine fibers
+            float shadowNoise = fbm(feltUV * 0.2, 3); // Low-frequency noise for shadows
+
+            // Base felt color (green)
+            float3 feltBaseColor = float3(0.1, 0.5, 0.2);
+            // Darker fibrous strands
+            float3 fiberColor = float3(0.05, 0.3, 0.1);
+            // Mix base and fiber colors based on noise
+            float fiberMix = smoothstep(0.6, 0.8, fiberDetail);
+            float3 feltColor = mix(feltBaseColor, fiberColor, fiberMix);
+            // Additional color variation with base noise
+            feltColor *= (0.7 + 0.3 * feltNoise);
+
+            // Perturb normal for fibrous bumpiness
+            float3 feltNormal = n;
+            float noiseGradX = fbm(feltUV + float2(0.01, 0.0), 4) - feltNoise;
+            float noiseGradZ = fbm(feltUV + float2(0.0, 0.01), 4) - feltNoise;
+            feltNormal += float3(noiseGradX, 0.0, noiseGradZ) * 0.07; // Slightly increased perturbation
+            feltNormal = normalize(feltNormal);
+
+            // Shadow effect
+            float shadowFactor = smoothstep(0.3, 0.7, shadowNoise);
+            float shadowStrength = 0.4; // Adjust shadow intensity
+            float ambient = 0.3; // Minimum lighting level
+
             float2 pocketCheck = float2(
                 abs(p.x) - (hIn.x - bWid + 0.03),
                 fmod(p.z + 0.5 * (hIn.y - bWid + 0.03), (hIn.y - bWid + 0.03)) - 0.5 * (hIn.y - bWid + 0.03)
             );
             float pocketDist = length(pocketCheck);
-
             if (pocketDist < 0.53) {
                 col = float3(0.0); // Pocket color
             } else if (max(abs(p.x) - hIn.x, abs(p.z) - hIn.y) < 0.3) {
-                // Green side rails (cushions)
-                col = float3(0.1, 0.5, 0.3); // Original green color
-
-                float diff = max(dot(n, normalize(lightPos - p)), 0.0);
-                float3 r = reflect(rd, n);
-                float spec = pow(max(dot(r, normalize(lightPos - p)), 0.0), 16.0);
-                col *= 0.3 + 0.7 * diff;
-                col += float3(0.15) * spec;
+                col = float3(0.1, 0.5, 0.3); // Cushion color
             } else {
-                // Mahogany wood texture for felt
-                float2 woodUV = p.xz * 0.5; // Scale for grain detail
-                float ringNoise = fbm(woodUV + float2(0.0, time * 0.1), 3); // Slight animation
-                float grainNoise = noise(woodUV * 10.0); // Fine grain
-
-                // Base mahogany color (reddish-brown)
-                float3 mahoganyBase = float3(0.45, 0.2, 0.1);
-                // Darker grain lines
-                float3 grainColor = float3(0.25, 0.1, 0.05);
-                // Rings for wood pattern
-                float rings = sin(ringNoise * 10.0) * 0.5 + 0.5;
-                float grain = smoothstep(0.7, 0.9, grainNoise);
-
-                // Mix colors
-                float3 woodColor = mix(mahoganyBase, grainColor, grain * rings);
-                woodColor *= (0.8 + 0.2 * ringNoise); // Slight brightness variation
-
-                // Perturb normal for wood grain bumpiness
-                float3 woodNormal = n;
-                float noiseGradX = fbm(woodUV + float2(0.01, 0.0), 3) - ringNoise;
-                float noiseGradZ = fbm(woodUV + float2(0.0, 0.01), 3) - ringNoise;
-                woodNormal += float3(noiseGradX, 0.0, noiseGradZ) * 0.05;
-                woodNormal = normalize(woodNormal);
-
-                col = woodColor;
-
-                float diff = max(dot(woodNormal, normalize(lightPos - p)), 0.0);
-                float3 r = reflect(rd, woodNormal);
-                float spec = pow(max(dot(r, normalize(lightPos - p)), 0.0), 32.0); // Higher shininess for polished wood
-                col *= 0.4 + 0.6 * diff; // Adjusted diffuse
-                col += float3(0.3) * spec; // Stronger specular for wood sheen
+                col = feltColor; // Apply procedural felt texture
             }
+
+            float diff = max(dot(feltNormal, normalize(lightPos - p)), 0.0);
+            float3 r = reflect(rd, feltNormal);
+            float spec = pow(max(dot(r, normalize(lightPos - p)), 0.0), 16.0);
+            // Apply lighting with shadow
+            col *= (ambient + (1.0 - ambient) * diff * (1.0 - shadowStrength * (1.0 - shadowFactor)));
+            col += float3(0.15) * spec * (0.5 + 0.5 * feltNoise); // Reduced specular intensity
         }
     }
 
     return clamp(col, 0.0, 1.0);
 }
+
 vertex VertexOut vertexShader(uint vertexID [[vertex_id]]) {
     constexpr float2 positions[4] = {
         float2(-1.0, -1.0),
@@ -634,12 +632,12 @@ final class BilliardSimulation: ObservableObject {
 
     private func checkPocket(pos: SIMD2<Float>, height: Float) -> Bool {
         let pocketPositions: [SIMD2<Float>] = [
-            SIMD2<Float>(-tableWidth + ballRadius, -tableLength + ballRadius),
-            SIMD2<Float>( tableWidth - ballRadius, -tableLength + ballRadius),
-            SIMD2<Float>(-tableWidth + ballRadius, 0.0),
-            SIMD2<Float>( tableWidth - ballRadius, 0.0),
-            SIMD2<Float>(-tableWidth + ballRadius,  tableLength - ballRadius),
-            SIMD2<Float>( tableWidth - ballRadius,  tableLength - ballRadius),
+            SIMD2<Float>(-tableWidth + ballRadius, -tableLength + ballRadius), // Bottom-left corner
+            SIMD2<Float>( tableWidth - ballRadius, -tableLength + ballRadius), // Bottom-right corner
+            SIMD2<Float>(-tableWidth + ballRadius, 0.0),                      // Middle-left
+            SIMD2<Float>( tableWidth - ballRadius, 0.0),                      // Middle-right
+            SIMD2<Float>(-tableWidth + ballRadius,  tableLength - ballRadius), // Top-left corner
+            SIMD2<Float>( tableWidth - ballRadius,  tableLength - ballRadius), // Top-right corner
         ]
         for p in pocketPositions {
             if simd_length(pos - p) < pocketRadius && height <= 0.01 + ballRadius {
