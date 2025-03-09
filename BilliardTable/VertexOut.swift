@@ -142,9 +142,9 @@ float3 showScene(float3 ro, float3 rd,
                  float2 cue3DRotate)
 {
     const float hbLen = 8.0;
-    const float bWid  = 0.4;
-    const float2 hIn  = float2(hbLen, hbLen * 1.75) - bWid;
-    const float PI    = 3.14159;
+    const float bWid = 0.4;
+    const float2 hIn = float2(hbLen, hbLen * 1.75) - bWid;
+    const float PI = 3.14159;
     const float pocketRadius = 0.53;
 
     float3 col = float3(0.05, 0.05, 0.1);
@@ -169,17 +169,17 @@ float3 showScene(float3 ro, float3 rd,
         float dBorder = prRoundBoxDf(pb, float3(hIn.x + 0.6, 0.5, hIn.y + 0.6), 0.2);
         float dTable = max(dBorder, -dSurface);
 
-        // Explicit pocket positions
+        // Updated pocket positions
         float2 pocketPositions[6] = {
-            float2(-7.526, -13.226), // Bottom-left
-            float2( 7.526, -13.226), // Bottom-right
-            float2(-7.37,   0.0),    // Middle-left
-            float2( 7.37,   0.0),    // Middle-right
-            float2(-7.526,  13.226), // Top-left
-            float2( 7.526,  13.226)  // Top-right
+            float2(-7.6,  13.6),  // Top-left corner (foot rail)
+            float2( 7.6,  13.6),  // Top-right corner (foot rail)
+            float2(-7.6,   0.0),  // Left side pocket (corrected)
+            float2( 7.6,   0.0),  // Right side pocket (corrected)
+            float2(-7.6, -13.6),  // Bottom-left corner (head rail)
+            float2( 7.6, -13.6)   // Bottom-right corner (head rail)
         };
 
-        float minPocketDist = pocketRadius + 0.1; // Initialize with a value larger than pocketRadius
+        float minPocketDist = pocketRadius + 0.1;
         for (int j = 0; j < 6; j++) {
             float distToPocket = length(p.xz - pocketPositions[j]);
             minPocketDist = min(minPocketDist, distToPocket);
@@ -322,12 +322,12 @@ float3 showScene(float3 ro, float3 rd,
             float ambient = 0.3;
 
             float2 pocketPositions[6] = {
-                float2(-7.526, -13.226),
-                float2( 7.526, -13.226),
-                float2(-7.37,   0.0),
-                float2( 7.37,   0.0),
-                float2(-7.526,  13.226),
-                float2( 7.526,  13.226)
+                float2(-7.6,  13.6),
+                float2( 7.6,  13.6),
+                float2(-7.6,   0.0),  // Corrected
+                float2( 7.6,   0.0),  // Corrected
+                float2(-7.6, -13.6),
+                float2( 7.6, -13.6)
             };
             bool inPocket = false;
             for (int j = 0; j < 6; j++) {
@@ -648,16 +648,16 @@ final class BilliardSimulation: ObservableObject {
 
     private func checkPocket(pos: SIMD2<Float>, height: Float) -> Bool {
         let pocketPositions: [SIMD2<Float>] = [
-            SIMD2<Float>(-7.526, -13.226), // Bottom-left corner
-            SIMD2<Float>( 7.526, -13.226), // Bottom-right corner
-            SIMD2<Float>(-7.37,   0.0),    // Middle-left
-            SIMD2<Float>( 7.37,   0.0),    // Middle-right
-            SIMD2<Float>(-7.526,  13.226), // Top-left corner
-            SIMD2<Float>( 7.526,  13.226)  // Top-right corner
+            SIMD2<Float>(-7.6,  13.6),  // Top-left corner (foot rail)
+            SIMD2<Float>( 7.6,  13.6),  // Top-right corner (foot rail)
+            SIMD2<Float>(-7.6,   0.0),  // Left side pocket (corrected)
+            SIMD2<Float>( 7.6,   0.0),  // Right side pocket (corrected)
+            SIMD2<Float>(-7.6, -13.6),  // Bottom-left corner (head rail)
+            SIMD2<Float>( 7.6, -13.6)   // Bottom-right corner (head rail)
         ]
         for p in pocketPositions {
             if simd_length(pos - p) < pocketRadius && height <= 0.01 + ballRadius {
-                return true
+                return true;
             }
         }
         return false
@@ -1185,7 +1185,7 @@ struct ContentView: View {
                                             -deltaY * scaleFactor
                                         )
                                         let offsetLength = simd_length(newOffset)
-                                        if offsetLength > simulation.maxTipOffset {
+                                        if (offsetLength > simulation.maxTipOffset) {
                                             newOffset *= simulation.maxTipOffset / offsetLength
                                         }
                                         simulation.cueTipOffset = newOffset
