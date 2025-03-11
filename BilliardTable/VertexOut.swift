@@ -141,13 +141,14 @@ float3 showScene(float3 ro, float3 rd,
                  float cueAngle,
                  float2 cue3DRotate)
 {
-    const float hbLen = 8.0;
-    const float bWid = 0.4;
-    const float2 hIn = float2(hbLen, hbLen * 1.75) - bWid;
+    const float hbLen = 8.0;           // Half table width
+    const float hbLenZ = hbLen * 1.75; // Half table length (14.0)
+    const float bWid = 0.4;            // Rail thickness
+    const float2 hIn = float2(hbLen, hbLenZ); // Inner dimensions for felt
     const float PI = 3.14159;
     const float pocketRadius = 0.53;
 
-    float3 col = float3(0.05, 0.05, 0.1);
+    float3 col = float3(0.05, 0.05, 0.1); // Background color
     float t = 0.0;
     const float maxDist = 50.0;
 
@@ -156,65 +157,102 @@ float3 showScene(float3 ro, float3 rd,
     int ballId;
     ballHit(ro, rd, dstBall, ballNormal, ballId, balls);
 
-    float dstTable = maxDist;
+    float dstFelt = maxDist;
+    float dstRails = maxDist;
     float dstCue = maxDist;
     float3 cueHitPos;
+    float hitSurface = 0.0; // 0: none, 1: felt, 2: rails, 3: cue
 
     for (int i = 0; i < 80; i++) {
         float3 p = ro + rd * t;
 
-        float dFelt = -prBoxDf(p, float3(hIn.x, 0.4, hIn.y));
-        float3 pb = p;
-        pb.y -= -0.6;
-        float dRails = prRoundBoxDf(pb, float3(hIn.x + 0.6, 0.5, hIn.y + 0.6), 0.2);
-        float dTable = max(dFelt, dRails);
+        // Green felt surface (aligned with cushion inner edges)
+        float dFelt = prBoxDf(p - float3(0.0, -0.6, 0.0), float3(hIn.x, 0.01, hIn.y));
 
-        // Updated pocket positions
+        // Rail segments (positioned flush with felt edges)
+        float3 pb = p;
+        pb.y -= -0.1; // Rail center at y = -0.6 + 0.5 = -0.1 (top above felt)
+
+        // Pocket positions
         float2 pocketPositions[6] = {
-            float2(-8,  14),  // Top-left corner (foot rail)
-            float2( 8,  14),  // Top-right corner (foot rail)
-            float2(-8,   0.0),  // Left side pocket (corrected)
-            float2( 8,   0.0),  // Right side pocket (corrected)
-            float2(-8, -14),  // Bottom-left corner (head rail)
-            float2( 8, -14)   // Bottom-right corner (head rail)
+            float2(-8,  14),  // Foot rail left
+            float2( 8,  14),  // Foot rail right
+            float2(-8,   0.0), // Left side middle
+            float2( 8,   0.0), // Right side middle
+            float2(-8, -14),  // Head rail left
+            float2( 8, -14)   // Head rail right
         };
 
-        float minPocketDist = pocketRadius + 0.1;
+        // Head rail (z = -14, single piece)
+        float3 headRailPos = pb - float3(0.0, 0.0, -hbLenZ);
+        float dHeadRail = prRoundBoxDf(headRailPos, float3(hbLen, 0.5, bWid), 0.1);
+
+        // Foot rail (z = 14, single piece)
+        float3 footRailPos = pb - float3(0.0, 0.0, hbLenZ);
+        float dFootRail = prRoundBoxDf(footRailPos, float3(hbLen, 0.5, bWid), 0.1);
+
+        // Left side rail, head to middle (x = -8, z from -14 to 0)
+        float3 leftHeadToMidPos = pb - float3(-hbLen, 0.0, -hbLenZ * 0.5);
+        float dLeftHeadToMid = prRoundBoxDf(leftHeadToMidPos, float3(bWid, 0.5, hbLenZ * 0.5 - pocketRadius), 0.1);
+
+        // Left side rail, middle to foot (x = -8, z from 0 to 14)
+        float3 leftMidToFootPos = pb - float3(-hbLen, 0.0, hbLenZ * 0.5);
+        float dLeftMidToFoot = prRoundBoxDf(leftMidToFootPos, float3(bWid, 0.5, hbLenZ * 0.5 - pocketRadius), 0.1);
+
+        // Right side rail, head to middle (x = 8, z from -14 to 0)
+        float3 rightHeadToMidPos = pb - float3(hbLen, 0.0, -hbLenZ * 0.5);
+        float dRightHeadToMid = prRoundBoxDf(rightHeadToMidPos, float3(bWid, 0.5, hbLenZ * 0.5 - pocketRadius), 0.1);
+
+        // Right side rail, middle to foot (x = 8, z from 0 to 14)
+        float3 rightMidToFootPos = pb - float3(hbLen, 0.0, hbLenZ * 0.5);
+        float dRightMidToFoot = prRoundBoxDf(rightMidToFootPos, float3(bWid, 0.5, hbLenZ * 0.5 - pocketRadius), 0.1);
+
+        // Combine rail distances
+        float dRails = min(min(dHeadRail, dFootRail),
+                          min(min(dLeftHeadToMid, dLeftMidToFoot), min(dRightHeadToMid, dRightMidToFoot)));
+
+        // Pocket cutouts (applied to both felt and rails)
+        float minPocketDist = maxDist;
         for (int j = 0; j < 6; j++) {
-            float distToPocket = length(p.xz - pocketPositions[j]);
+            float distToPocket = length(pb.xz - pocketPositions[j]) - pocketRadius;
             minPocketDist = min(minPocketDist, distToPocket);
         }
-        dTable = smoothMax(dTable, pocketRadius - minPocketDist, 0.02);
+        dFelt = max(dFelt, -minPocketDist);   // Carve pockets from felt
+        dRails = max(dRails, -minPocketDist); // Carve pockets from rails
 
+        // Cue stick (unchanged)
         float3 pc = p - float3(balls[0].position.x, balls[0].height, balls[0].position.y);
         pc.y -= 0.01;
-
         float baseAngle = sin(time * 0.5) * 0.1;
         pc = rotateX(pc, cue3DRotate.y);
         float finalYaw = baseAngle + cue3DRotate.x;
         pc = rotateY(pc, finalYaw);
-
         float cueLength = 2.5;
         float ballRadius = 0.47;
         float tipOffset = cueLength;
         float maxCueOffset = -ballRadius;
         pc.z += (maxCueOffset - cueOffset - tipOffset);
         pc = rotateY(pc, 3.14159);
-
         pc.x -= cueTipOffset.x;
         pc.y -= cueTipOffset.y;
-
         float dCueStick = prRoundCylDf(pc, 0.1 - (0.015 / 2.5) * (pc.z + tipOffset), 0.05, cueLength);
         if (cueVisible == 0) dCueStick = 99999.0;
 
-        float d = min(dTable, dCueStick);
-
+        // Find closest surface
+        float d = min(min(dFelt, dRails), dCueStick);
         if (d < 0.0005 || t > dstBall) {
-            if (dTable < dCueStick) {
-                dstTable = t;
+            if (dstBall < dFelt && dstBall < dRails && dstBall < dCueStick) {
+                break; // Ball hit first, handled below
+            } else if (dFelt < dRails && dFelt < dCueStick) {
+                dstFelt = t;
+                hitSurface = 1.0;
+            } else if (dRails < dFelt && dRails < dCueStick) {
+                dstRails = t;
+                hitSurface = 2.0;
             } else {
                 dstCue = t;
                 cueHitPos = pc;
+                hitSurface = 3.0;
             }
             break;
         }
@@ -225,9 +263,10 @@ float3 showScene(float3 ro, float3 rd,
 
     float3 lightPos = float3(0.0, 3.0 * hbLen, 0.0);
 
-    float minDist = min(min(dstBall, dstTable), dstCue);
+    float minDist = min(min(dstBall, dstFelt), min(dstRails, dstCue));
     if (minDist < maxDist) {
-        if (dstBall <= min(dstTable, dstCue)) {
+        if (dstBall <= min(dstFelt, min(dstRails, dstCue))) {
+            // Ball rendering (unchanged)
             float3 p = ro + rd * dstBall;
             float3 n = ballNormal;
             int id = ballId;
@@ -254,7 +293,6 @@ float3 showScene(float3 ro, float3 rd,
                 } else {
                     col = baseColor;
                 }
-
                 float2 circleCenter = float2(0.5, 0.5);
                 float circleRadius = 0.2;
                 float distToCenter = length(uv - circleCenter);
@@ -264,12 +302,116 @@ float3 showScene(float3 ro, float3 rd,
                 }
             }
             col *= 0.2 + 0.8 * max(n.y, 0.0);
-
             float3 r = reflect(rd, n);
             float spec = pow(max(dot(r, normalize(lightPos - p)), 0.0), 16.0);
             col += float3(0.2) * spec;
         }
-        else if (dstCue < dstTable) {
+        else if (hitSurface == 1.0) { // Felt hit
+            float3 p = ro + rd * dstFelt;
+            float3 eps = float3(0.001, 0.0, 0.0);
+            float3 n = normalize(float3(
+                prBoxDf(p + eps.xyy - float3(0.0, -0.6, 0.0), float3(hIn.x, 0.01, hIn.y)) -
+                prBoxDf(p - eps.xyy - float3(0.0, -0.6, 0.0), float3(hIn.x, 0.01, hIn.y)),
+                prBoxDf(p + eps.yxy - float3(0.0, -0.6, 0.0), float3(hIn.x, 0.01, hIn.y)) -
+                prBoxDf(p - eps.yxy - float3(0.0, -0.6, 0.0), float3(hIn.x, 0.01, hIn.y)),
+                prBoxDf(p + eps.yyx - float3(0.0, -0.6, 0.0), float3(hIn.x, 0.01, hIn.y)) -
+                prBoxDf(p - eps.yyx - float3(0.0, -0.6, 0.0), float3(hIn.x, 0.01, hIn.y))
+            ));
+
+            // Felt rendering
+            float2 feltUV = p.xz * 0.5;
+            float feltNoise = fbm(feltUV, 4);
+            float fiberDetail = noise(feltUV * 15.0);
+            float shadowNoise = fbm(feltUV * 0.2, 3);
+            float3 feltBaseColor = float3(0.1, 0.5, 0.2); // Green felt
+            float3 fiberColor = float3(0.05, 0.3, 0.1);
+            float fiberMix = smoothstep(0.6, 0.8, fiberDetail);
+            float3 feltColor = mix(feltBaseColor, fiberColor, fiberMix);
+            feltColor *= (0.7 + 0.3 * feltNoise);
+            float3 feltNormal = n;
+            float noiseGradX = fbm(feltUV + float2(0.01, 0.0), 4) - feltNoise;
+            float noiseGradZ = fbm(feltUV + float2(0.0, 0.01), 4) - feltNoise;
+            feltNormal += float3(noiseGradX, 0.0, noiseGradZ) * 0.07;
+            feltNormal = normalize(feltNormal);
+            float shadowFactor = smoothstep(0.3, 0.7, shadowNoise);
+            float shadowStrength = 0.4;
+            float ambient = 0.7;
+
+            // Pocket check for felt
+            float2 pocketPositions[6] = {
+                float2(-8,  14),
+                float2( 8,  14),
+                float2(-8,   0.0),
+                float2( 8,   0.0),
+                float2(-8, -14),
+                float2( 8, -14)
+            };
+            bool inPocket = false;
+            for (int j = 0; j < 6; j++) {
+                if (length(p.xz - pocketPositions[j]) < pocketRadius) {
+                    col = float3(0.0);
+                    inPocket = true;
+                    break;
+                }
+            }
+
+            if (!inPocket) {
+                if (max(abs(p.x) - hIn.x, abs(p.z) - hIn.y) < 0.3) {
+                    col = float3(0.1, 0.5, 0.3); // Border color
+                } else {
+                    col = feltColor;
+                }
+                float diff = max(dot(feltNormal, normalize(lightPos - p)), 0.0);
+                float3 r = reflect(rd, feltNormal);
+                float spec = pow(max(dot(r, normalize(lightPos - p)), 0.0), 16.0);
+                col *= (ambient + (1.0 - ambient) * diff * (1.0 - shadowStrength * (1.0 - shadowFactor)));
+                col += float3(0.15) * spec * (0.5 + 0.5 * feltNoise);
+            }
+        }
+        else if (hitSurface == 2.0) { // Rails hit
+            float3 p = ro + rd * dstRails;
+            float3 pb = p;
+            pb.y -= -0.1; // Adjust for rail height
+            float3 eps = float3(0.001, 0.0, 0.0);
+
+            // Recalculate rail distances for normal computation
+            float dCheckHeadRail = prRoundBoxDf(pb - float3(0.0, 0.0, -hbLenZ),
+                                               float3(hbLen, 0.5, bWid), 0.1);
+            float dCheckFootRail = prRoundBoxDf(pb - float3(0.0, 0.0, hbLenZ),
+                                               float3(hbLen, 0.5, bWid), 0.1);
+            float dCheckLeftHeadToMid = prRoundBoxDf(pb - float3(-hbLen, 0.0, -hbLenZ * 0.5),
+                                                    float3(bWid, 0.5, hbLenZ * 0.5 - pocketRadius), 0.1);
+            float dCheckLeftMidToFoot = prRoundBoxDf(pb - float3(-hbLen, 0.0, hbLenZ * 0.5),
+                                                    float3(bWid, 0.5, hbLenZ * 0.5 - pocketRadius), 0.1);
+            float dCheckRightHeadToMid = prRoundBoxDf(pb - float3(hbLen, 0.0, -hbLenZ * 0.5),
+                                                     float3(bWid, 0.5, hbLenZ * 0.5 - pocketRadius), 0.1);
+            float dCheckRightMidToFoot = prRoundBoxDf(pb - float3(hbLen, 0.0, hbLenZ * 0.5),
+                                                     float3(bWid, 0.5, hbLenZ * 0.5 - pocketRadius), 0.1);
+
+            float3 n = normalize(float3(
+                min(min(dCheckHeadRail + eps.x, dCheckFootRail + eps.x),
+                    min(min(dCheckLeftHeadToMid + eps.x, dCheckLeftMidToFoot + eps.x), min(dCheckRightHeadToMid + eps.x, dCheckRightMidToFoot + eps.x))) -
+                min(min(dCheckHeadRail - eps.x, dCheckFootRail - eps.x),
+                    min(min(dCheckLeftHeadToMid - eps.x, dCheckLeftMidToFoot - eps.x), min(dCheckRightHeadToMid - eps.x, dCheckRightMidToFoot - eps.x))),
+                min(min(dCheckHeadRail + eps.y, dCheckFootRail + eps.y),
+                    min(min(dCheckLeftHeadToMid + eps.y, dCheckLeftMidToFoot + eps.y), min(dCheckRightHeadToMid + eps.y, dCheckRightMidToFoot + eps.y))) -
+                min(min(dCheckHeadRail - eps.y, dCheckFootRail - eps.y),
+                    min(min(dCheckLeftHeadToMid - eps.y, dCheckLeftMidToFoot - eps.y), min(dCheckRightHeadToMid - eps.y, dCheckRightMidToFoot - eps.y))),
+                min(min(dCheckHeadRail + eps.z, dCheckFootRail + eps.z),
+                    min(min(dCheckLeftHeadToMid + eps.z, dCheckLeftMidToFoot + eps.z), min(dCheckRightHeadToMid + eps.z, dCheckRightMidToFoot + eps.z))) -
+                min(min(dCheckHeadRail - eps.z, dCheckFootRail - eps.z),
+                    min(min(dCheckLeftHeadToMid - eps.z, dCheckLeftMidToFoot - eps.z), min(dCheckRightHeadToMid - eps.z, dCheckRightMidToFoot - eps.z)))
+            ));
+
+            // Rail rendering
+            col = float3(0.65, 0.16, 0.16); // Mahogany color
+            float diff = max(dot(n, normalize(lightPos - p)), 0.0);
+            float3 r = reflect(rd, n);
+            float spec = pow(max(dot(r, normalize(lightPos - p)), 0.0), 16.0);
+            col *= (0.3 + 0.7 * diff);
+            col += float3(0.2) * spec;
+        }
+        else if (hitSurface == 3.0) { // Cue stick hit
             float3 p = ro + rd * dstCue;
             float3 eps = float3(0.001, 0.0, 0.0);
             float3 n = normalize(float3(
@@ -281,103 +423,11 @@ float3 showScene(float3 ro, float3 rd,
                 prRoundCylDf(cueHitPos - eps.yyx, 0.1, 0.05, 2.5)
             ));
             col = (cueHitPos.z < 2.2) ? float3(0.5, 0.3, 0.0) : float3(0.7, 0.7, 0.3);
-
             float diff = max(dot(n, normalize(lightPos - p)), 0.0);
             float3 r = reflect(rd, n);
             float spec = pow(max(dot(r, normalize(lightPos - p)), 0.0), 16.0);
             col *= 0.3 + 0.7 * diff;
             col += float3(0.2) * spec;
-        }
-        else {
-            float3 p = ro + rd * dstTable;
-            float3 eps = float3(0.001, 0.0, 0.0);
-            float3 n = normalize(float3(
-                prBoxDf(p + eps.xyy, float3(hIn.x, 0.4, hIn.y)) -
-                prBoxDf(p - eps.xyy, float3(hIn.x, 0.4, hIn.y)),
-                prBoxDf(p + eps.yxy, float3(hIn.x, 0.4, hIn.y)) -
-                prBoxDf(p - eps.yxy, float3(hIn.x, 0.4, hIn.y)),
-                prBoxDf(p + eps.yyx, float3(hIn.x, 0.4, hIn.y)) -
-                prBoxDf(p - eps.yyx, float3(hIn.x, 0.4, hIn.y))
-            ));
-
-            float2 feltUV = p.xz * 0.5;
-            float feltNoise = fbm(feltUV, 4);
-            float fiberDetail = noise(feltUV * 15.0);
-            float shadowNoise = fbm(feltUV * 0.2, 3);
-
-            float3 feltBaseColor = float3(0.1, 0.5, 0.2);
-            float3 fiberColor = float3(0.05, 0.3, 0.1);
-            float fiberMix = smoothstep(0.6, 0.8, fiberDetail);
-            float3 feltColor = mix(feltBaseColor, fiberColor, fiberMix);
-            feltColor *= (0.7 + 0.3 * feltNoise);
-
-            float3 feltNormal = n;
-            float noiseGradX = fbm(feltUV + float2(0.01, 0.0), 4) - feltNoise;
-            float noiseGradZ = fbm(feltUV + float2(0.0, 0.01), 4) - feltNoise;
-            feltNormal += float3(noiseGradX, 0.0, noiseGradZ) * 0.07;
-            feltNormal = normalize(feltNormal);
-
-            float shadowFactor = smoothstep(0.3, 0.7, shadowNoise);
-            float shadowStrength = 0.4;
-            // Increase ambient from 0.3 to 0.5 to make the table lighter
-            float ambient = 0.7;
-
-            float2 pocketPositions[6] = {
-                float2(-8,  14),
-                float2( 8,  14),
-                float2(-8,   0.0),  // Corrected
-                float2( 8,   0.0),  // Corrected
-                float2(-8, -14),
-                float2( 8, -14)
-            };
-            bool inPocket = false;
-
-            for (int j = 0; j < 6; j++) {
-                if (length(p.xz - pocketPositions[j]) < pocketRadius) {
-                    col = float3(0.0);
-                    inPocket = true;
-                    break;
-                }
-            }
-
-            float dCheckFelt = -prBoxDf(p, float3(hIn.x, 0.4, hIn.y));
-            float3 pForRails = p;
-            pForRails.y -= -0.6;
-            float dCheckRails = prRoundBoxDf(pForRails, float3(hIn.x + 0.6, 0.5, hIn.y + 0.6), 0.2);
-
-            if (!inPocket) {
-                bool onRails = (abs(dCheckRails) < abs(dCheckFelt));
-                if (onRails) {
-                    // Mahogany rails color
-                    col = float3(0.65, 0.16, 0.16);
-
-                    // Simple shading
-                    float diff = max(dot(n, normalize(lightPos - p)), 0.0);
-                    float3 r = reflect(rd, n);
-                    float spec = pow(max(dot(r, normalize(lightPos - p)), 0.0), 16.0);
-                    col *= (0.3 + 0.7 * diff);
-                    col += float3(0.2) * spec;
-                } else {
-                    // Felt logic (unchanged from your existing code)
-                    if (max(abs(p.x) - hIn.x, abs(p.z) - hIn.y) < 0.3) {
-                        col = float3(0.1, 0.5, 0.3);
-                    } else {
-                        col = feltColor;
-                    }
-
-                    float diff = max(dot(feltNormal, normalize(lightPos - p)), 0.0);
-                    float3 r = reflect(rd, feltNormal);
-                    float spec = pow(max(dot(r, normalize(lightPos - p)), 0.0), 16.0);
-                    col *= (ambient + (1.0 - ambient) * diff * (1.0 - shadowStrength * (1.0 - shadowFactor)));
-                    col += float3(0.15) * spec * (0.5 + 0.5 * feltNoise);
-                }
-            }
-
-            float diff = max(dot(feltNormal, normalize(lightPos - p)), 0.0);
-            float3 r = reflect(rd, feltNormal);
-            float spec = pow(max(dot(r, normalize(lightPos - p)), 0.0), 16.0);
-            col *= (ambient + (1.0 - ambient) * diff * (1.0 - shadowStrength * (1.0 - shadowFactor)));
-            col += float3(0.15) * spec * (0.5 + 0.5 * feltNoise);
         }
     }
 
