@@ -163,11 +163,11 @@ float3 showScene(float3 ro, float3 rd,
     for (int i = 0; i < 80; i++) {
         float3 p = ro + rd * t;
 
-        float dSurface = prBoxDf(p, float3(hIn.x, 0.4, hIn.y));
+        float dFelt = -prBoxDf(p, float3(hIn.x, 0.4, hIn.y));
         float3 pb = p;
         pb.y -= -0.6;
-        float dBorder = prRoundBoxDf(pb, float3(hIn.x + 0.6, 0.5, hIn.y + 0.6), 0.2);
-        float dTable = max(dBorder, -dSurface);
+        float dRails = prRoundBoxDf(pb, float3(hIn.x + 0.6, 0.5, hIn.y + 0.6), 0.2);
+        float dTable = max(dFelt, dRails);
 
         // Updated pocket positions
         float2 pocketPositions[6] = {
@@ -319,7 +319,8 @@ float3 showScene(float3 ro, float3 rd,
 
             float shadowFactor = smoothstep(0.3, 0.7, shadowNoise);
             float shadowStrength = 0.4;
-            float ambient = 0.3;
+            // Increase ambient from 0.3 to 0.5 to make the table lighter
+            float ambient = 0.7;
 
             float2 pocketPositions[6] = {
                 float2(-8,  14),
@@ -330,6 +331,7 @@ float3 showScene(float3 ro, float3 rd,
                 float2( 8, -14)
             };
             bool inPocket = false;
+
             for (int j = 0; j < 6; j++) {
                 if (length(p.xz - pocketPositions[j]) < pocketRadius) {
                     col = float3(0.0);
@@ -337,11 +339,37 @@ float3 showScene(float3 ro, float3 rd,
                     break;
                 }
             }
+
+            float dCheckFelt = -prBoxDf(p, float3(hIn.x, 0.4, hIn.y));
+            float3 pForRails = p;
+            pForRails.y -= -0.6;
+            float dCheckRails = prRoundBoxDf(pForRails, float3(hIn.x + 0.6, 0.5, hIn.y + 0.6), 0.2);
+
             if (!inPocket) {
-                if (max(abs(p.x) - hIn.x, abs(p.z) - hIn.y) < 0.3) {
-                    col = float3(0.1, 0.5, 0.3);
+                bool onRails = (abs(dCheckRails) < abs(dCheckFelt));
+                if (onRails) {
+                    // Mahogany rails color
+                    col = float3(0.65, 0.16, 0.16);
+
+                    // Simple shading
+                    float diff = max(dot(n, normalize(lightPos - p)), 0.0);
+                    float3 r = reflect(rd, n);
+                    float spec = pow(max(dot(r, normalize(lightPos - p)), 0.0), 16.0);
+                    col *= (0.3 + 0.7 * diff);
+                    col += float3(0.2) * spec;
                 } else {
-                    col = feltColor;
+                    // Felt logic (unchanged from your existing code)
+                    if (max(abs(p.x) - hIn.x, abs(p.z) - hIn.y) < 0.3) {
+                        col = float3(0.1, 0.5, 0.3);
+                    } else {
+                        col = feltColor;
+                    }
+
+                    float diff = max(dot(feltNormal, normalize(lightPos - p)), 0.0);
+                    float3 r = reflect(rd, feltNormal);
+                    float spec = pow(max(dot(r, normalize(lightPos - p)), 0.0), 16.0);
+                    col *= (ambient + (1.0 - ambient) * diff * (1.0 - shadowStrength * (1.0 - shadowFactor)));
+                    col += float3(0.15) * spec * (0.5 + 0.5 * feltNoise);
                 }
             }
 
