@@ -7,7 +7,57 @@ let metalShader = """
 #include <metal_stdlib>
 using namespace metal;
 
-// MARK: - Noise Functions for Procedural Texture
+// -------------------------------------
+//      1) Plane + Polyhedron SDF
+// -------------------------------------
+struct Plane {
+    float3 normal;
+    float  offset;
+};
+
+float planeDistance(float3 p, Plane plane) {
+    return dot(plane.normal, p) + plane.offset;
+}
+
+Plane buildPlaneFromTriangle(float3 v0, float3 v1, float3 v2, int outwardSign) {
+    float3 e1 = v1 - v0;
+    float3 e2 = v2 - v0;
+    float3 n = normalize(cross(e1, e2));
+    if (outwardSign < 0) {
+        n = -n;
+    }
+    Plane plane;
+    plane.normal = n;
+    plane.offset = -dot(n, v0);
+    return plane;
+}
+
+float prConvexPolyhedronFrom8Corners(float3 p, constant float3* corners) {
+    Plane planes[6];
+    // Bottom face (0,1,2,3)
+    planes[0] = buildPlaneFromTriangle(corners[0], corners[1], corners[2], -1);
+    // Top face (4,5,6,7)
+    planes[1] = buildPlaneFromTriangle(corners[4], corners[5], corners[6], 1);
+    // Side A (0,1,5,4)
+    planes[2] = buildPlaneFromTriangle(corners[0], corners[1], corners[5], 1);
+    // Side B (1,2,6,5)
+    planes[3] = buildPlaneFromTriangle(corners[1], corners[2], corners[6], 1);
+    // Side C (2,3,7,6)
+    planes[4] = buildPlaneFromTriangle(corners[2], corners[3], corners[7], 1);
+    // Side D (3,0,4,7)
+    planes[5] = buildPlaneFromTriangle(corners[3], corners[0], corners[4], 1);
+
+    float d = -1e6;
+    for (int i = 0; i < 6; i++) {
+        float pd = planeDistance(p, planes[i]);
+        d = max(d, pd);
+    }
+    return d;
+}
+
+// -------------------------------------
+//   2) Original Noise / Utility SDF
+// -------------------------------------
 float hash(float2 p) {
     return fract(sin(dot(p, float2(127.1, 311.7))) * 43758.5453);
 }
@@ -35,19 +85,6 @@ float fbm(float2 p, int octaves) {
     return v;
 }
 
-// MARK: - Existing Utility Functions
-struct VertexOut {
-    float4 position [[position]];
-    float2 uv;
-};
-
-struct Ball {
-    float2 position;
-    float2 velocity;
-    float4 quaternion;
-    float height;
-};
-
 float3 hsvToRgb(float3 c) {
     float3 p = abs(fract(c.xxx + float3(1.0, 2.0/3.0, 1.0/3.0)) * 6.0 - 3.0);
     return c.z * mix(float3(1.0), clamp(p - 1.0, 0.0, 1.0), c.y);
@@ -58,32 +95,10 @@ float prBoxDf(float3 p, float3 b) {
     return min(max(d.x, max(d.y, d.z)), 0.0) + length(max(d, 0.0));
 }
 
-float prRoundBoxDf(float3 p, float3 b, float r) {
-    return length(max(abs(p) - b, 0.0)) - r;
-}
-
-float prSphDf(float3 p, float r) {
-    return length(p) - r;
-}
-
 float prRoundCylDf(float3 p, float r, float rt, float h) {
     float dxy = length(p.xy) - (r - (rt / 2.5) * p.z);
     float dz = abs(p.z) - h;
     return min(min(max(dxy + rt, dz), max(dxy, dz + rt)), length(float2(dxy, dz) + rt) - rt);
-}
-
-float2 rot2D(float2 q, float a) {
-    float2 cs = float2(cos(a), sin(a));
-    return float2(q.x * cs.x - q.y * cs.y, q.x * cs.y + q.y * cs.x);
-}
-
-float smoothMin(float a, float b, float r) {
-    float h = clamp(0.5 + 0.5 * (b - a) / r, 0.0, 1.0);
-    return mix(b, a, h) - r * h * (1.0 - h);
-}
-
-float smoothMax(float a, float b, float r) {
-    return -smoothMin(-a, -b, r);
 }
 
 float3 rotateX(float3 v, float angle) {
@@ -109,6 +124,21 @@ float3x3 qtToRMat(float4 q) {
     return 2.0 * m;
 }
 
+// -------------------------------------
+//   3) Ball Intersection
+// -------------------------------------
+struct VertexOut {
+    float4 position [[position]];
+    float2 uv;
+};
+
+struct Ball {
+    float2 position;
+    float2 velocity;
+    float4 quaternion;
+    float height;
+};
+
 void ballHit(float3 ro, float3 rd, thread float &dist, thread float3 &normal,
              thread int &id, constant Ball* balls [[buffer(2)]]) {
     const int nBall = 16;
@@ -120,18 +150,66 @@ void ballHit(float3 ro, float3 rd, thread float &dist, thread float3 &normal,
         float3 ballPos = float3(balls[n].position.x, balls[n].height, balls[n].position.y);
         float3 u = ro - ballPos;
         float b = dot(rd, u);
-        float w = b * b - dot(u, u) + rad * rad;
+        float w = b*b - dot(u, u) + rad*rad;
         if (w > 0.0) {
             float d = -b - sqrt(w);
             if (d > 0.0 && d < dist) {
                 dist = d;
-                normal = normalize(u + d * rd);
+                normal = normalize(u + d*rd);
                 id = n;
             }
         }
     }
 }
 
+// -------------------------------------
+//   4) 8-corner definitions w/ rails lifted
+// -------------------------------------
+constant float3 HEAD_RAIL_CORNERS[8] = {
+    float3(-8.0, -0.58, -14.4), float3( 8.0, -0.58, -14.4),
+    float3( 8.0,  0.4,  -14.4), float3(-8.0,  0.4,  -14.4),
+    float3(-8.0, -0.58, -13.6), float3( 8.0, -0.58, -13.6),
+    float3( 8.0,  0.4,  -13.6), float3(-8.0,  0.4,  -13.6)
+};
+
+constant float3 FOOT_RAIL_CORNERS[8] = {
+    float3(-8.0, -0.58, 13.6),  float3( 8.0, -0.58, 13.6),
+    float3( 8.0,  0.4,  13.6),  float3(-8.0,  0.4,  13.6),
+    float3(-8.0, -0.58, 14.4),  float3( 8.0, -0.58, 14.4),
+    float3( 8.0,  0.4,  14.4),  float3(-8.0,  0.4,  14.4)
+};
+
+constant float3 LEFT_HEAD_MID_CORNERS[8] = {
+    float3(-8.4, -0.58, -14.0), float3(-7.6, -0.58, -14.0),
+    float3(-7.6,  0.4,  -14.0), float3(-8.4,  0.4,  -14.0),
+    float3(-8.4, -0.58,  0.0),  float3(-7.6, -0.58,  0.0),
+    float3(-7.6,  0.4,   0.0),  float3(-8.4,  0.4,   0.0)
+};
+
+constant float3 LEFT_MID_FOOT_CORNERS[8] = {
+    float3(-8.4, -0.58, 0.0),   float3(-7.6, -0.58, 0.0),
+    float3(-7.6,  0.4,  0.0),   float3(-8.4,  0.4,  0.0),
+    float3(-8.4, -0.58, 14.0),  float3(-7.6, -0.58, 14.0),
+    float3(-7.6,  0.4,  14.0),  float3(-8.4,  0.4,  14.0)
+};
+
+constant float3 RIGHT_HEAD_MID_CORNERS[8] = {
+    float3(7.6, -0.58, -14.0),  float3(8.4, -0.58, -14.0),
+    float3(8.4,  0.4,  -14.0),  float3(7.6,  0.4,  -14.0),
+    float3(7.6, -0.58,  0.0),   float3(8.4, -0.58,  0.0),
+    float3(8.4,  0.4,   0.0),   float3(7.6,  0.4,   0.0)
+};
+
+constant float3 RIGHT_MID_FOOT_CORNERS[8] = {
+    float3(7.6, -0.58, 0.0),    float3(8.4, -0.58, 0.0),
+    float3(8.4,  0.4,  0.0),    float3(7.6,  0.4,  0.0),
+    float3(7.6, -0.58, 14.0),   float3(8.4, -0.58, 14.0),
+    float3(8.4,  0.4,  14.0),   float3(7.6,  0.4,  14.0)
+};
+
+// -------------------------------------
+//   5) showScene with new rail SDF
+// -------------------------------------
 float3 showScene(float3 ro, float3 rd,
                  float time,
                  float cueOffset,
@@ -141,14 +219,13 @@ float3 showScene(float3 ro, float3 rd,
                  float cueAngle,
                  float2 cue3DRotate)
 {
-    const float hbLen = 8.0;           // Half table width
-    const float hbLenZ = hbLen * 1.75; // Half table length (14.0)
-    const float bWid = 0.4;            // Rail thickness
-    const float2 hIn = float2(hbLen, hbLenZ); // Inner dimensions for felt
+    const float hbLen = 8.0;
+    const float hbLenZ = hbLen * 1.75;
+    const float2 hIn = float2(hbLen, hbLenZ);
     const float PI = 3.14159;
     const float pocketRadius = 0.53;
 
-    float3 col = float3(0.05, 0.05, 0.1); // Background color
+    float3 col = float3(0.05, 0.05, 0.1);
     float t = 0.0;
     const float maxDist = 50.0;
 
@@ -161,66 +238,39 @@ float3 showScene(float3 ro, float3 rd,
     float dstRails = maxDist;
     float dstCue = maxDist;
     float3 cueHitPos;
-    float hitSurface = 0.0; // 0: none, 1: felt, 2: rails, 3: cue
+    float hitSurface = 0.0;
 
     for (int i = 0; i < 80; i++) {
         float3 p = ro + rd * t;
 
-        // Green felt surface (aligned with cushion inner edges)
         float dFelt = prBoxDf(p - float3(0.0, -0.6, 0.0), float3(hIn.x, 0.01, hIn.y));
 
-        // Rail segments (positioned flush with felt edges)
-        float3 pb = p;
-        pb.y -= -0.1; // Rail center at y = -0.6 + 0.5 = -0.1 (top above felt)
+        float dHeadRail = prConvexPolyhedronFrom8Corners(p, HEAD_RAIL_CORNERS);
+        float dFootRail = prConvexPolyhedronFrom8Corners(p, FOOT_RAIL_CORNERS);
+        float dLeftHeadToMid = prConvexPolyhedronFrom8Corners(p, LEFT_HEAD_MID_CORNERS);
+        float dLeftMidToFoot = prConvexPolyhedronFrom8Corners(p, LEFT_MID_FOOT_CORNERS);
+        float dRightHeadToMid = prConvexPolyhedronFrom8Corners(p, RIGHT_HEAD_MID_CORNERS);
+        float dRightMidToFoot = prConvexPolyhedronFrom8Corners(p, RIGHT_MID_FOOT_CORNERS);
 
-        // Pocket positions
+        float dRails = min(dHeadRail,
+                       min(dFootRail,
+                       min(dLeftHeadToMid,
+                       min(dLeftMidToFoot,
+                       min(dRightHeadToMid, dRightMidToFoot)))));
+
         float2 pocketPositions[6] = {
-            float2(-8,  14),  // Foot rail left
-            float2( 8,  14),  // Foot rail right
-            float2(-8,   0.0), // Left side middle
-            float2( 8,   0.0), // Right side middle
-            float2(-8, -14),  // Head rail left
-            float2( 8, -14)   // Head rail right
+            float2(-8,  14), float2( 8,  14),
+            float2(-8,   0), float2( 8,   0),
+            float2(-8, -14), float2( 8, -14)
         };
-
-        // Head rail (z = -14, single piece)
-        float3 headRailPos = pb - float3(0.0, 0.0, -hbLenZ);
-        float dHeadRail = prRoundBoxDf(headRailPos, float3(hbLen, 0.5, bWid), 0.1);
-
-        // Foot rail (z = 14, single piece)
-        float3 footRailPos = pb - float3(0.0, 0.0, hbLenZ);
-        float dFootRail = prRoundBoxDf(footRailPos, float3(hbLen, 0.5, bWid), 0.1);
-
-        // Left side rail, head to middle (x = -8, z from -14 to 0)
-        float3 leftHeadToMidPos = pb - float3(-hbLen, 0.0, -hbLenZ * 0.5);
-        float dLeftHeadToMid = prRoundBoxDf(leftHeadToMidPos, float3(bWid, 0.5, hbLenZ * 0.5 - pocketRadius), 0.1);
-
-        // Left side rail, middle to foot (x = -8, z from 0 to 14)
-        float3 leftMidToFootPos = pb - float3(-hbLen, 0.0, hbLenZ * 0.5);
-        float dLeftMidToFoot = prRoundBoxDf(leftMidToFootPos, float3(bWid, 0.5, hbLenZ * 0.5 - pocketRadius), 0.1);
-
-        // Right side rail, head to middle (x = 8, z from -14 to 0)
-        float3 rightHeadToMidPos = pb - float3(hbLen, 0.0, -hbLenZ * 0.5);
-        float dRightHeadToMid = prRoundBoxDf(rightHeadToMidPos, float3(bWid, 0.5, hbLenZ * 0.5 - pocketRadius), 0.1);
-
-        // Right side rail, middle to foot (x = 8, z from 0 to 14)
-        float3 rightMidToFootPos = pb - float3(hbLen, 0.0, hbLenZ * 0.5);
-        float dRightMidToFoot = prRoundBoxDf(rightMidToFootPos, float3(bWid, 0.5, hbLenZ * 0.5 - pocketRadius), 0.1);
-
-        // Combine rail distances
-        float dRails = min(min(dHeadRail, dFootRail),
-                          min(min(dLeftHeadToMid, dLeftMidToFoot), min(dRightHeadToMid, dRightMidToFoot)));
-
-        // Pocket cutouts (applied to both felt and rails)
         float minPocketDist = maxDist;
         for (int j = 0; j < 6; j++) {
-            float distToPocket = length(pb.xz - pocketPositions[j]) - pocketRadius;
+            float distToPocket = length(p.xz - pocketPositions[j]) - pocketRadius;
             minPocketDist = min(minPocketDist, distToPocket);
         }
-        dFelt = max(dFelt, -minPocketDist);   // Carve pockets from felt
-        dRails = max(dRails, -minPocketDist); // Carve pockets from rails
+        dFelt = max(dFelt, -minPocketDist);
+        dRails = max(dRails, -minPocketDist);
 
-        // Cue stick (unchanged)
         float3 pc = p - float3(balls[0].position.x, balls[0].height, balls[0].position.y);
         pc.y -= 0.01;
         float baseAngle = sin(time * 0.5) * 0.1;
@@ -236,13 +286,14 @@ float3 showScene(float3 ro, float3 rd,
         pc.x -= cueTipOffset.x;
         pc.y -= cueTipOffset.y;
         float dCueStick = prRoundCylDf(pc, 0.1 - (0.015 / 2.5) * (pc.z + tipOffset), 0.05, cueLength);
-        if (cueVisible == 0) dCueStick = 99999.0;
+        if (cueVisible == 0) {
+            dCueStick = 99999.0;
+        }
 
-        // Find closest surface
         float d = min(min(dFelt, dRails), dCueStick);
         if (d < 0.0005 || t > dstBall) {
             if (dstBall < dFelt && dstBall < dRails && dstBall < dCueStick) {
-                break; // Ball hit first, handled below
+                break;
             } else if (dFelt < dRails && dFelt < dCueStick) {
                 dstFelt = t;
                 hitSurface = 1.0;
@@ -266,26 +317,26 @@ float3 showScene(float3 ro, float3 rd,
     float minDist = min(min(dstBall, dstFelt), min(dstRails, dstCue));
     if (minDist < maxDist) {
         if (dstBall <= min(dstFelt, min(dstRails, dstCue))) {
-            // Ball rendering (unchanged)
             float3 p = ro + rd * dstBall;
             float3 n = ballNormal;
             int id = ballId;
+
             if (id == 0) {
                 col = float3(1.0);
             } else {
                 float c = float(id - 1);
-                float3 baseColor;
                 bool isStriped = (id >= 9);
+                float3 baseColor;
                 if (id == 8) {
                     baseColor = float3(0.0);
                 } else {
-                    baseColor = hsvToRgb(float3(fmod(c / 7.0, 1.0), 1.0, 1.0));
+                    baseColor = hsvToRgb(float3(fmod(c/7.0, 1.0), 1.0, 1.0));
                 }
                 float3x3 rotMat = qtToRMat(balls[id].quaternion);
                 float3 rotatedNormal = rotMat * n;
                 float2 uv = float2(
-                    atan2(rotatedNormal.x, rotatedNormal.z) / (2.0 * PI) + 0.5,
-                    acos(rotatedNormal.y) / PI
+                    atan2(rotatedNormal.x, rotatedNormal.z)/(2.0*PI) + 0.5,
+                    acos(rotatedNormal.y)/PI
                 );
                 if (isStriped && id != 8) {
                     float stripeFactor = sin(uv.y * PI * 10.0);
@@ -298,154 +349,131 @@ float3 showScene(float3 ro, float3 rd,
                 float distToCenter = length(uv - circleCenter);
                 if (distToCenter < circleRadius && id != 0) {
                     col = float3(1.0);
-                    if (distToCenter < circleRadius * 0.7) col = float3(0.0);
+                    if (distToCenter < circleRadius*0.7) col = float3(0.0);
                 }
             }
-            col *= 0.2 + 0.8 * max(n.y, 0.0);
+            col *= 0.2 + 0.8*max(n.y, 0.0);
             float3 r = reflect(rd, n);
             float spec = pow(max(dot(r, normalize(lightPos - p)), 0.0), 16.0);
-            col += float3(0.2) * spec;
+            col += float3(0.2)*spec;
         }
-        else if (hitSurface == 1.0) { // Felt hit
-            float3 p = ro + rd * dstFelt;
-            float3 eps = float3(0.001, 0.0, 0.0);
+        else if (hitSurface == 1.0) {
+            float3 p = ro + rd*dstFelt;
+            float3 eps = float3(0.001,0.0,0.0);
             float3 n = normalize(float3(
-                prBoxDf(p + eps.xyy - float3(0.0, -0.6, 0.0), float3(hIn.x, 0.01, hIn.y)) -
-                prBoxDf(p - eps.xyy - float3(0.0, -0.6, 0.0), float3(hIn.x, 0.01, hIn.y)),
-                prBoxDf(p + eps.yxy - float3(0.0, -0.6, 0.0), float3(hIn.x, 0.01, hIn.y)) -
-                prBoxDf(p - eps.yxy - float3(0.0, -0.6, 0.0), float3(hIn.x, 0.01, hIn.y)),
-                prBoxDf(p + eps.yyx - float3(0.0, -0.6, 0.0), float3(hIn.x, 0.01, hIn.y)) -
-                prBoxDf(p - eps.yyx - float3(0.0, -0.6, 0.0), float3(hIn.x, 0.01, hIn.y))
+                prBoxDf(p + eps.xyy - float3(0.0, -0.6, 0.0), float3(hIn.x,0.01,hIn.y))
+              - prBoxDf(p - eps.xyy - float3(0.0, -0.6, 0.0), float3(hIn.x,0.01,hIn.y)),
+                prBoxDf(p + eps.yxy - float3(0.0, -0.6, 0.0), float3(hIn.x,0.01,hIn.y))
+              - prBoxDf(p - eps.yxy - float3(0.0, -0.6, 0.0), float3(hIn.x,0.01,hIn.y)),
+                prBoxDf(p + eps.yyx - float3(0.0, -0.6, 0.0), float3(hIn.x,0.01,hIn.y))
+              - prBoxDf(p - eps.yyx - float3(0.0, -0.6, 0.0), float3(hIn.x,0.01,hIn.y))
             ));
 
-            // Felt rendering
             float2 feltUV = p.xz * 0.5;
             float feltNoise = fbm(feltUV, 4);
-            float fiberDetail = noise(feltUV * 15.0);
-            float shadowNoise = fbm(feltUV * 0.2, 3);
-            float3 feltBaseColor = float3(0.1, 0.5, 0.2); // Green felt
-            float3 fiberColor = float3(0.05, 0.3, 0.1);
+            float fiberDetail = noise(feltUV*15.0);
+            float shadowNoise = fbm(feltUV*0.2, 3);
+            float3 feltBaseColor = float3(0.1, 0.5, 0.2);
+            float3 fiberColor = float3(0.05,0.3,0.1);
             float fiberMix = smoothstep(0.6, 0.8, fiberDetail);
             float3 feltColor = mix(feltBaseColor, fiberColor, fiberMix);
-            feltColor *= (0.7 + 0.3 * feltNoise);
+            feltColor *= (0.7 + 0.3*feltNoise);
             float3 feltNormal = n;
-            float noiseGradX = fbm(feltUV + float2(0.01, 0.0), 4) - feltNoise;
-            float noiseGradZ = fbm(feltUV + float2(0.0, 0.01), 4) - feltNoise;
-            feltNormal += float3(noiseGradX, 0.0, noiseGradZ) * 0.07;
+            float noiseGradX = fbm(feltUV + float2(0.01,0.0),4) - feltNoise;
+            float noiseGradZ = fbm(feltUV + float2(0.0,0.01),4) - feltNoise;
+            feltNormal += float3(noiseGradX, 0.0, noiseGradZ)*0.07;
             feltNormal = normalize(feltNormal);
             float shadowFactor = smoothstep(0.3, 0.7, shadowNoise);
             float shadowStrength = 0.4;
             float ambient = 0.7;
 
-            // Pocket check for felt
             float2 pocketPositions[6] = {
-                float2(-8,  14),
-                float2( 8,  14),
-                float2(-8,   0.0),
-                float2( 8,   0.0),
-                float2(-8, -14),
-                float2( 8, -14)
+                float2(-8,14), float2(8,14),
+                float2(-8,0),  float2(8,0),
+                float2(-8,-14),float2(8,-14)
             };
             bool inPocket = false;
-            for (int j = 0; j < 6; j++) {
-                if (length(p.xz - pocketPositions[j]) < pocketRadius) {
+            for (int j=0; j<6; j++) {
+                if (length(p.xz - pocketPositions[j]) < 0.53) {
                     col = float3(0.0);
                     inPocket = true;
                     break;
                 }
             }
-
             if (!inPocket) {
-                if (max(abs(p.x) - hIn.x, abs(p.z) - hIn.y) < 0.3) {
-                    col = float3(0.1, 0.5, 0.3); // Border color
+                if (max(abs(p.x)-hIn.x, abs(p.z)-hIn.y) < 0.3) {
+                    col = float3(0.1,0.5,0.3);
                 } else {
                     col = feltColor;
                 }
-                float diff = max(dot(feltNormal, normalize(lightPos - p)), 0.0);
+                float diff = max(dot(feltNormal, normalize(lightPos - p)),0.0);
                 float3 r = reflect(rd, feltNormal);
-                float spec = pow(max(dot(r, normalize(lightPos - p)), 0.0), 16.0);
-                col *= (ambient + (1.0 - ambient) * diff * (1.0 - shadowStrength * (1.0 - shadowFactor)));
-                col += float3(0.15) * spec * (0.5 + 0.5 * feltNoise);
+                float spec = pow(max(dot(r, normalize(lightPos - p)),0.0),16.0);
+                col *= (ambient + (1.0-ambient)*diff*(1.0-shadowStrength*(1.0-shadowFactor)));
+                col += float3(0.15)*spec*(0.5 + 0.5*feltNoise);
             }
         }
-        else if (hitSurface == 2.0) { // Rails hit
-            float3 p = ro + rd * dstRails;
-            float3 pb = p;
-            pb.y -= -0.1; // Adjust for rail height
-            float3 eps = float3(0.001, 0.0, 0.0);
+        else if (hitSurface == 2.0) {
+            float3 p = ro + rd*dstRails;
 
-            // Recalculate rail distances for normal computation
-            float dCheckHeadRail = prRoundBoxDf(pb - float3(0.0, 0.0, -hbLenZ),
-                                               float3(hbLen, 0.5, bWid), 0.1);
-            float dCheckFootRail = prRoundBoxDf(pb - float3(0.0, 0.0, hbLenZ),
-                                               float3(hbLen, 0.5, bWid), 0.1);
-            float dCheckLeftHeadToMid = prRoundBoxDf(pb - float3(-hbLen, 0.0, -hbLenZ * 0.5),
-                                                    float3(bWid, 0.5, hbLenZ * 0.5 - pocketRadius), 0.1);
-            float dCheckLeftMidToFoot = prRoundBoxDf(pb - float3(-hbLen, 0.0, hbLenZ * 0.5),
-                                                    float3(bWid, 0.5, hbLenZ * 0.5 - pocketRadius), 0.1);
-            float dCheckRightHeadToMid = prRoundBoxDf(pb - float3(hbLen, 0.0, -hbLenZ * 0.5),
-                                                     float3(bWid, 0.5, hbLenZ * 0.5 - pocketRadius), 0.1);
-            float dCheckRightMidToFoot = prRoundBoxDf(pb - float3(hbLen, 0.0, hbLenZ * 0.5),
-                                                     float3(bWid, 0.5, hbLenZ * 0.5 - pocketRadius), 0.1);
+            auto railDistAt = [&](float3 q) {
+                float ddHead  = prConvexPolyhedronFrom8Corners(q, HEAD_RAIL_CORNERS);
+                float ddFoot  = prConvexPolyhedronFrom8Corners(q, FOOT_RAIL_CORNERS);
+                float ddLHM   = prConvexPolyhedronFrom8Corners(q, LEFT_HEAD_MID_CORNERS);
+                float ddLMF   = prConvexPolyhedronFrom8Corners(q, LEFT_MID_FOOT_CORNERS);
+                float ddRHM   = prConvexPolyhedronFrom8Corners(q, RIGHT_HEAD_MID_CORNERS);
+                float ddRMF   = prConvexPolyhedronFrom8Corners(q, RIGHT_MID_FOOT_CORNERS);
+                return min(ddHead, min(ddFoot, min(ddLHM, min(ddLMF, min(ddRHM, ddRMF)))));
+            };
 
+            float3 eps = float3(0.001,0,0);
             float3 n = normalize(float3(
-                min(min(dCheckHeadRail + eps.x, dCheckFootRail + eps.x),
-                    min(min(dCheckLeftHeadToMid + eps.x, dCheckLeftMidToFoot + eps.x), min(dCheckRightHeadToMid + eps.x, dCheckRightMidToFoot + eps.x))) -
-                min(min(dCheckHeadRail - eps.x, dCheckFootRail - eps.x),
-                    min(min(dCheckLeftHeadToMid - eps.x, dCheckLeftMidToFoot - eps.x), min(dCheckRightHeadToMid - eps.x, dCheckRightMidToFoot - eps.x))),
-                min(min(dCheckHeadRail + eps.y, dCheckFootRail + eps.y),
-                    min(min(dCheckLeftHeadToMid + eps.y, dCheckLeftMidToFoot + eps.y), min(dCheckRightHeadToMid + eps.y, dCheckRightMidToFoot + eps.y))) -
-                min(min(dCheckHeadRail - eps.y, dCheckFootRail - eps.y),
-                    min(min(dCheckLeftHeadToMid - eps.y, dCheckLeftMidToFoot - eps.y), min(dCheckRightHeadToMid - eps.y, dCheckRightMidToFoot - eps.y))),
-                min(min(dCheckHeadRail + eps.z, dCheckFootRail + eps.z),
-                    min(min(dCheckLeftHeadToMid + eps.z, dCheckLeftMidToFoot + eps.z), min(dCheckRightHeadToMid + eps.z, dCheckRightMidToFoot + eps.z))) -
-                min(min(dCheckHeadRail - eps.z, dCheckFootRail - eps.z),
-                    min(min(dCheckLeftHeadToMid - eps.z, dCheckLeftMidToFoot - eps.z), min(dCheckRightHeadToMid - eps.z, dCheckRightMidToFoot - eps.z)))
+                railDistAt(p + eps.xyy) - railDistAt(p - eps.xyy),
+                railDistAt(p + eps.yxy) - railDistAt(p - eps.yxy),
+                railDistAt(p + eps.yyx) - railDistAt(p - eps.yyx)
             ));
 
-            // Rail rendering
-            col = float3(0.65, 0.16, 0.16); // Mahogany color
+            col = float3(0.65, 0.16, 0.16);
             float diff = max(dot(n, normalize(lightPos - p)), 0.0);
             float3 r = reflect(rd, n);
             float spec = pow(max(dot(r, normalize(lightPos - p)), 0.0), 16.0);
-            col *= (0.3 + 0.7 * diff);
-            col += float3(0.2) * spec;
+            col *= (0.3 + 0.7*diff);
+            col += float3(0.2)*spec;
         }
-        else if (hitSurface == 3.0) { // Cue stick hit
-            float3 p = ro + rd * dstCue;
+        else if (hitSurface == 3.0) {
+            float3 p = ro + rd*dstCue;
             float3 eps = float3(0.001, 0.0, 0.0);
             float3 n = normalize(float3(
-                prRoundCylDf(cueHitPos + eps.xyy, 0.1, 0.05, 2.5) -
-                prRoundCylDf(cueHitPos - eps.xyy, 0.1, 0.05, 2.5),
-                prRoundCylDf(cueHitPos + eps.yxy, 0.1, 0.05, 2.5) -
-                prRoundCylDf(cueHitPos - eps.yxy, 0.1, 0.05, 2.5),
-                prRoundCylDf(cueHitPos + eps.yyx, 0.1, 0.05, 2.5) -
-                prRoundCylDf(cueHitPos - eps.yyx, 0.1, 0.05, 2.5)
+                prRoundCylDf(cueHitPos + eps.xyy, 0.1, 0.05, 2.5)
+              - prRoundCylDf(cueHitPos - eps.xyy, 0.1, 0.05, 2.5),
+                prRoundCylDf(cueHitPos + eps.yxy, 0.1, 0.05, 2.5)
+              - prRoundCylDf(cueHitPos - eps.yxy, 0.1, 0.05, 2.5),
+                prRoundCylDf(cueHitPos + eps.yyx, 0.1, 0.05, 2.5)
+              - prRoundCylDf(cueHitPos - eps.yyx, 0.1, 0.05, 2.5)
             ));
-            col = (cueHitPos.z < 2.2) ? float3(0.5, 0.3, 0.0) : float3(0.7, 0.7, 0.3);
-            float diff = max(dot(n, normalize(lightPos - p)), 0.0);
+            col = (cueHitPos.z < 2.2) ? float3(0.5,0.3,0.0) : float3(0.7,0.7,0.3);
+            float diff = max(dot(n, normalize(lightPos - p)),0.0);
             float3 r = reflect(rd, n);
-            float spec = pow(max(dot(r, normalize(lightPos - p)), 0.0), 16.0);
-            col *= 0.3 + 0.7 * diff;
-            col += float3(0.2) * spec;
+            float spec = pow(max(dot(r, normalize(lightPos - p)),0.0),16.0);
+            col *= (0.3 + 0.7*diff);
+            col += float3(0.2)*spec;
         }
     }
 
     return clamp(col, 0.0, 1.0);
 }
 
+// -------------------------------------
+//   6) Vertex & Fragment Shaders
+// -------------------------------------
 vertex VertexOut vertexShader(uint vertexID [[vertex_id]]) {
     constexpr float2 positions[4] = {
-        float2(-1.0, -1.0),
-        float2( 1.0, -1.0),
-        float2(-1.0,  1.0),
-        float2( 1.0,  1.0)
+        float2(-1.0, -1.0), float2( 1.0, -1.0),
+        float2(-1.0,  1.0), float2( 1.0,  1.0)
     };
     constexpr float2 uvs[4] = {
-        float2(0.0, 0.0),
-        float2(1.0, 0.0),
-        float2(0.0, 1.0),
-        float2(1.0, 1.0)
+        float2(0.0, 0.0), float2(1.0, 0.0),
+        float2(0.0, 1.0), float2(1.0, 1.0)
     };
     VertexOut out;
     out.position = float4(positions[vertexID], 0.0, 1.0);
@@ -467,16 +495,14 @@ fragment float4 fragmentShader(VertexOut in [[stage_in]],
 
     float3 target = float3(0.0, 0.0, 0.0);
     float3 ro = float3(0.0, 10.0, 20.0);
-
     float angle = time * 0.1;
-    ro = float3(sin(angle) * 20.0, 10.0, cos(angle) * 20.0);
+    ro = float3(sin(angle)*20.0, 10.0, cos(angle)*20.0);
 
     float3 vd = normalize(target - ro);
-    float3 right = normalize(cross(float3(0.0, 1.0, 0.0), vd));
+    float3 right = normalize(cross(float3(0.0,1.0,0.0), vd));
     float3 up = normalize(cross(vd, right));
-
     const float fov = 0.8;
-    float3 rd = normalize(vd + right * uv.x * fov + up * uv.y * fov);
+    float3 rd = normalize(vd + right*uv.x*fov + up*uv.y*fov);
 
     float3 col = showScene(ro, rd, time, cueOffset, cueTipOffset,
                            balls, cueVisible, cueAngle, cue3DRotate);
@@ -502,9 +528,8 @@ fragment float4 behindBallFragmentShader(VertexOut in [[stage_in]],
     float3 vd = normalize(target - ro);
     float3 right = normalize(cross(float3(0.0, 1.0, 0.0), vd));
     float3 up = normalize(cross(vd, right));
-
     const float fov = 0.8;
-    float3 rd = normalize(vd + right * uv.x * fov + up * uv.y * fov);
+    float3 rd = normalize(vd + right*uv.x*fov + up*uv.y*fov);
 
     float timeDummy = 0.0;
     float3 col = showScene(ro, rd, timeDummy, cueOffset, cueTipOffset,
@@ -529,11 +554,10 @@ fragment float4 thirdBallFragmentShader(VertexOut in [[stage_in]],
     float3 target = cameraTarget;
 
     float3 vd = normalize(target - ro);
-    float3 right = normalize(cross(float3(0.0, 1.0, 0.0), vd));
+    float3 right = normalize(cross(float3(0.0,1.0,0.0), vd));
     float3 up = normalize(cross(vd, right));
-
     const float fov = 0.8;
-    float3 rd = normalize(vd + right * uv.x * fov + up * uv.y * fov);
+    float3 rd = normalize(vd + right*uv.x*fov + up*uv.y*fov);
 
     float timeDummy = 0.0;
     float3 col = showScene(ro, rd, timeDummy, cueOffset, cueTipOffset,
@@ -568,7 +592,6 @@ struct BallData {
     var quaternion: SIMD4<Float>
 }
 
-// MARK: - Shader-Compatible Ball Data
 struct BallShaderData {
     var position: SIMD2<Float>
     var velocity: SIMD2<Float>
@@ -576,7 +599,7 @@ struct BallShaderData {
     var height: Float
 }
 
-// MARK: - Main Simulation
+// MARK: - BilliardSimulation Class
 final class BilliardSimulation: ObservableObject {
     let device: MTLDevice
     let commandQueue: MTLCommandQueue
@@ -651,7 +674,8 @@ final class BilliardSimulation: ObservableObject {
         guard let vertexFunction = library.makeFunction(name: "vertexShader"),
               let orbitFragment = library.makeFunction(name: "fragmentShader"),
               let behindFragment = library.makeFunction(name: "behindBallFragmentShader"),
-              let thirdFragment = library.makeFunction(name: "thirdBallFragmentShader") else {
+              let thirdFragment = library.makeFunction(name: "thirdBallFragmentShader")
+        else {
             print("Missing required shader functions.")
             return nil
         }
@@ -679,7 +703,7 @@ final class BilliardSimulation: ObservableObject {
             return nil
         }
 
-        let identityQuat = SIMD4<Float>(0, 0, 0, 1)
+        let identityQuat = SIMD4<Float>(0,0,0,1)
         self.balls = [
             BallData(position: SIMD2<Float>(0.0, 5.0), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
             BallData(position: SIMD2<Float>(-0.5, -2.0), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
@@ -699,7 +723,10 @@ final class BilliardSimulation: ObservableObject {
             BallData(position: SIMD2<Float>(0.0, 0.0), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat)
         ]
 
-        var ballShaderData = [BallShaderData](repeating: BallShaderData(position: .zero, velocity: .zero, quaternion: .zero, height: 0.0), count: 16)
+        var ballShaderData = [BallShaderData](
+            repeating: BallShaderData(position: .zero, velocity: .zero, quaternion: .zero, height: 0.0),
+            count: 16
+        )
         for i in 0..<16 {
             ballShaderData[i] = BallShaderData(
                 position: balls[i].position,
@@ -708,9 +735,11 @@ final class BilliardSimulation: ObservableObject {
                 height: balls[i].height
             )
         }
-        self.ballBuffer = device.makeBuffer(bytes: ballShaderData,
-                                            length: MemoryLayout<BallShaderData>.stride * 16,
-                                            options: .storageModeShared)!
+        self.ballBuffer = device.makeBuffer(
+            bytes: ballShaderData,
+            length: MemoryLayout<BallShaderData>.stride * 16,
+            options: .storageModeShared
+        )!
 
         orbitUniformsBuffer = device.makeBuffer(length: MemoryLayout<Float>.stride, options: .storageModeShared)!
         behindCamPosBuffer = device.makeBuffer(length: MemoryLayout<SIMD3<Float>>.stride, options: .storageModeShared)!
@@ -726,16 +755,13 @@ final class BilliardSimulation: ObservableObject {
 
     private func checkPocket(pos: SIMD2<Float>, height: Float) -> Bool {
         let pocketPositions: [SIMD2<Float>] = [
-            SIMD2<Float>(-8,  14),  // Top-left corner (foot rail)
-            SIMD2<Float>( 8,  14),  // Top-right corner (foot rail)
-            SIMD2<Float>(-8,   0.0),  // Left side pocket (corrected)
-            SIMD2<Float>( 8,   0.0),  // Right side pocket (corrected)
-            SIMD2<Float>(-8, -14),  // Bottom-left corner (head rail)
-            SIMD2<Float>( 8, -14)   // Bottom-right corner (head rail)
+            SIMD2<Float>(-8,14),  SIMD2<Float>( 8,14),
+            SIMD2<Float>(-8, 0),  SIMD2<Float>( 8, 0),
+            SIMD2<Float>(-8,-14), SIMD2<Float>( 8,-14)
         ]
         for p in pocketPositions {
             if simd_length(pos - p) < pocketRadius && height <= 0.01 + ballRadius {
-                return true;
+                return true
             }
         }
         return false
@@ -751,7 +777,7 @@ final class BilliardSimulation: ObservableObject {
                 shooting = true
             }
             cueOffset -= cueStrikeSpeed * deltaTime
-            if (cueOffset <= 0.0) {
+            if cueOffset <= 0.0 {
                 cueOffset = 0.0
                 applyCueStrike()
                 shooting = false
@@ -763,7 +789,9 @@ final class BilliardSimulation: ObservableObject {
         if !isTouching && hitTriggered {
             var allStopped = true
             for ball in balls {
-                if simd_length(ball.velocity) > 0.01 || abs(ball.verticalVelocity) > 0.01 || simd_length(ball.angularVelocity) > 0.05 {
+                if simd_length(ball.velocity) > 0.01
+                   || abs(ball.verticalVelocity) > 0.01
+                   || simd_length(ball.angularVelocity) > 0.05 {
                     allStopped = false
                     break
                 }
@@ -784,9 +812,7 @@ final class BilliardSimulation: ObservableObject {
 
                 let v = ball.velocity
                 let w = ball.angularVelocity
-                let vMag = simd_length(v)
 
-                // Gravity and vertical motion
                 ball.verticalVelocity -= gravity * dt
                 ball.height += ball.verticalVelocity * dt
                 if ball.height <= 0.01 {
@@ -797,7 +823,7 @@ final class BilliardSimulation: ObservableObject {
                     }
                 }
 
-                if ball.height <= 0.01 + 0.001 {
+                if ball.height <= 0.011 {
                     let relativeVelocityAtContact = v - ballRadius * SIMD2<Float>(-w.z, w.x)
                     let sliding = simd_length(relativeVelocityAtContact) > 0.02
 
@@ -806,58 +832,66 @@ final class BilliardSimulation: ObservableObject {
                         let frictionForce = frictionKinetic * ballMass * gravity
                         let accel = frictionForce / ballMass * frictionDir
                         ball.velocity += accel * dt
+
                         let torque = frictionForce * ballRadius
                         let alpha = torque / momentOfInertia * SIMD3<Float>(-frictionDir.y, 0, frictionDir.x)
                         ball.angularVelocity += alpha * dt
-                    } else if vMag > 0 {
-                        let frictionDir = -simd_normalize(v)
-                        let frictionForce = frictionRolling * ballMass * gravity
-                        let accel = frictionForce / ballMass * frictionDir
-                        ball.velocity += accel * dt
-                        let alpha = frictionForce / ballRadius / momentOfInertia
-                            * SIMD3<Float>(-frictionDir.y, 0, frictionDir.x)
-                        ball.angularVelocity += alpha * dt
+                    } else {
+                        let vMag = simd_length(v)
+                        if vMag > 0 {
+                            let frictionDir = -simd_normalize(v)
+                            let frictionForce = frictionRolling * ballMass * gravity
+                            let accel = frictionForce / ballMass * frictionDir
+                            ball.velocity += accel * dt
+                            let alpha = frictionForce / (ballRadius * momentOfInertia)
+                                * SIMD3<Float>(-frictionDir.y, 0, frictionDir.x)
+                            ball.angularVelocity += alpha * dt
+                        }
                     }
 
-                    if simd_length(w) > 0 {
-                        let wMag = simd_length(w)
+                    let wMag = simd_length(ball.angularVelocity)
+                    if wMag > 0 {
                         let decay = -simd_normalize(w) * frictionSpinDecay * dt
                         ball.angularVelocity += decay
-                        if dot(w + decay, w) <= 0 { ball.angularVelocity = .zero }
+                        if simd_dot(ball.angularVelocity + decay, ball.angularVelocity) <= 0 {
+                            ball.angularVelocity = .zero
+                        }
                     }
                 }
 
                 ball.position += ball.velocity * dt
 
-                let wMag = simd_length(ball.angularVelocity)
-                if wMag > 0 {
-                    let axis = ball.angularVelocity / wMag
-                    let angle = wMag * dt
+                let wMag2 = simd_length(ball.angularVelocity)
+                if wMag2 > 0 {
+                    let axis = ball.angularVelocity / wMag2
+                    let angle = wMag2 * dt
                     let deltaQuat = quaternionFromAxisAngle(axis, angle)
                     ball.quaternion = quaternionMultiply(deltaQuat, ball.quaternion)
-                    ball.quaternion = normalize(ball.quaternion)
+                    ball.quaternion = simd_normalize(ball.quaternion)
                 }
 
-                // Cushion collisions
+                // Simplified cushion collision (to be improved with SDF)
                 if abs(ball.position.x) > cushionEdgeX - ballRadius && ball.height <= 0.01 + ballRadius {
-                    ball.position.x = (ball.position.x > 0) ? (cushionEdgeX - ballRadius)
-                                                            : -(cushionEdgeX - ballRadius)
+                    ball.position.x = (ball.position.x > 0)
+                        ? (cushionEdgeX - ballRadius)
+                        : -(cushionEdgeX - ballRadius)
                     ball.velocity.x = -ball.velocity.x * restitutionCushion
                     let spinChange = -ball.angularVelocity.z * 0.5
                     ball.angularVelocity.z += spinChange
                     ball.angularVelocity.y *= 0.6
                 }
                 if abs(ball.position.y) > cushionEdgeZ - ballRadius && ball.height <= 0.01 + ballRadius {
-                    ball.position.y = (ball.position.y > 0) ? (cushionEdgeZ - ballRadius)
-                                                            : -(cushionEdgeZ - ballRadius)
+                    ball.position.y = (ball.position.y > 0)
+                        ? (cushionEdgeZ - ballRadius)
+                        : -(cushionEdgeZ - ballRadius)
                     ball.velocity.y = -ball.velocity.y * restitutionCushion
                     let spinChange = ball.angularVelocity.x * 0.5
                     ball.angularVelocity.x += spinChange
                     ball.angularVelocity.y *= 0.6
                 }
 
-                // Pocket check
-                if (i != 0 || ball.height <= 0.01 + ballRadius) && checkPocket(pos: ball.position, height: ball.height) {
+                if (i != 0 || ball.height <= 0.01 + ballRadius)
+                   && checkPocket(pos: ball.position, height: ball.height) {
                     ball.velocity = SIMD2<Float>(.infinity, .infinity)
                     ball.verticalVelocity = 0.0
                     ball.angularVelocity = .zero
@@ -868,55 +902,57 @@ final class BilliardSimulation: ObservableObject {
                 balls[i] = ball
             }
 
-            // Ball collisions
             for i in 0..<15 {
                 for j in (i+1)..<16 {
-                    var ball1 = balls[i]
-                    var ball2 = balls[j]
-                    if ball1.velocity.x.isInfinite || ball2.velocity.x.isInfinite { continue }
+                    var b1 = balls[i]
+                    var b2 = balls[j]
+                    if b1.velocity.x.isInfinite || b2.velocity.x.isInfinite { continue }
 
-                    let delta = ball2.position - ball1.position
+                    let delta = b2.position - b1.position
                     let dist = simd_length(delta)
-                    let heightDiff = abs(ball1.height - ball2.height)
+                    let heightDiff = abs(b1.height - b2.height)
 
-                    if dist < 2.0 * ballRadius && dist > 0 && (heightDiff < ballRadius || (ball1.height <= 0.01 + ballRadius && ball2.height <= 0.01 + ballRadius)) {
+                    if dist < 2.0 * ballRadius && dist > 0
+                       && (heightDiff < ballRadius
+                           || (b1.height <= 0.01 + ballRadius && b2.height <= 0.01 + ballRadius)) {
                         let normal = delta / dist
-                        let relativeVel = ball1.velocity - ball2.velocity
-                        let impulse = simd_dot(relativeVel, normal)
+                        let relVel = b1.velocity - b2.velocity
+                        let impulse = simd_dot(relVel, normal)
                         if impulse > 0 {
                             let impulseMag = -(1.0 + restitutionBall) * impulse / (2.0 / ballMass)
-                            let impulseVector = normal * impulseMag
-                            ball1.velocity += impulseVector / ballMass
-                            ball2.velocity -= impulseVector / ballMass
+                            let impulseVec = normal * impulseMag
+                            b1.velocity += impulseVec / ballMass
+                            b2.velocity -= impulseVec / ballMass
 
                             let tangent = SIMD2<Float>(-normal.y, normal.x)
-                            let relVelTangent = simd_dot(relativeVel, tangent)
+                            let relVelTangent = simd_dot(relVel, tangent)
                             let frictionImpulse = min(ballFriction * abs(impulseMag),
                                                       abs(relVelTangent) * ballMass)
-                            let frictionVector = tangent * frictionImpulse * (relVelTangent > 0 ? -1 : 1)
-                            ball1.velocity += frictionVector / ballMass
-                            ball2.velocity -= frictionVector / ballMass
+                            let frictionVec = tangent * frictionImpulse * (relVelTangent > 0 ? -1 : 1)
+                            b1.velocity += frictionVec / ballMass
+                            b2.velocity -= frictionVec / ballMass
 
-                            let spinChange = frictionImpulse / ballRadius / momentOfInertia
-                            ball1.angularVelocity += SIMD3<Float>(-tangent.y, 0, tangent.x) * spinChange
-                            ball2.angularVelocity -= SIMD3<Float>(-tangent.y, 0, tangent.x) * spinChange
+                            let spinChange = frictionImpulse / (ballRadius * momentOfInertia)
+                            b1.angularVelocity += SIMD3<Float>(-tangent.y, 0, tangent.x) * spinChange
+                            b2.angularVelocity -= SIMD3<Float>(-tangent.y, 0, tangent.x) * spinChange
 
                             let overlap = 2.0 * ballRadius - dist
                             let correction = normal * (overlap * 0.5)
-                            ball1.position -= correction
-                            ball2.position += correction
+                            b1.position -= correction
+                            b2.position += correction
                         }
                     }
-                    balls[i] = ball1
-                    balls[j] = ball2
+                    balls[i] = b1
+                    balls[j] = b2
                 }
             }
 
-            // Stop small movements
             for i in 0..<16 {
                 let vMag = simd_length(balls[i].velocity)
                 let wMag = simd_length(balls[i].angularVelocity)
-                if vMag < 0.01 && abs(balls[i].verticalVelocity) < 0.01 && wMag < 0.05 {
+                if vMag < 0.01
+                   && abs(balls[i].verticalVelocity) < 0.01
+                   && wMag < 0.05 {
                     balls[i].velocity = .zero
                     balls[i].verticalVelocity = 0.0
                     balls[i].angularVelocity = .zero
@@ -936,46 +972,44 @@ final class BilliardSimulation: ObservableObject {
     }
 
     func rotateX(_ vector: SIMD3<Float>, _ angle: Float) -> SIMD3<Float> {
-        let cosA = cos(angle)
-        let sinA = sin(angle)
+        let c = cos(angle)
+        let s = sin(angle)
         return SIMD3<Float>(
             vector.x,
-            vector.y * cosA - vector.z * sinA,
-            vector.y * sinA + vector.z * cosA
+            vector.y * c - vector.z * s,
+            vector.y * s + vector.z * c
         )
     }
 
     func rotateY(_ vector: SIMD3<Float>, _ angle: Float) -> SIMD3<Float> {
-        let cosA = cos(angle)
-        let sinA = sin(angle)
+        let c = cos(angle)
+        let s = sin(angle)
         return SIMD3<Float>(
-            vector.x * cosA + vector.z * sinA,
+            vector.x * c + vector.z * s,
             vector.y,
-            -vector.x * sinA + vector.z * cosA
+            -vector.x * s + vector.z * c
         )
     }
 
     private func applyCueStrike() {
-        var cueDir = SIMD3<Float>(0, 0, -1)
+        var cueDir = SIMD3<Float>(0,0,-1)
         cueDir = rotateX(cueDir, cue3DRotate.y)
         cueDir = rotateY(cueDir, -cue3DRotate.x)
-        let cueDir2D = normalize(SIMD2<Float>(cueDir.x, cueDir.z))
-
         let baseSpeed: Float = 15.0
         let velocityScale = 0.5 + 1.5 * powerAtRelease
 
         let tipOffset3D = SIMD3<Float>(cueTipOffset.x, -cueTipOffset.y, 0)
         let spinFactor: Float = 10.0 / (2.0 * ballRadius)
-        let angularVelocity = cross(cueDir, tipOffset3D) * spinFactor * velocityScale
+        let angularVelocity = simd_cross(cueDir, tipOffset3D) * spinFactor * velocityScale
         balls[0].angularVelocity = angularVelocity
 
         let jumpFactor = -sin(cue3DRotate.y) * baseSpeed * velocityScale
         balls[0].verticalVelocity = jumpFactor > 0 ? jumpFactor : 0.0
 
-        let spinEffect = cross(angularVelocity, SIMD3<Float>(cueDir.x, 0, cueDir.z)) * 0.3
-        let adjustedDir = normalize(cueDir + spinEffect)
-        let adjustedDir2D = normalize(SIMD2<Float>(adjustedDir.x, adjustedDir.z))
-        balls[0].velocity = adjustedDir2D * baseSpeed * velocityScale
+        let spinEffect = simd_cross(angularVelocity, SIMD3<Float>(cueDir.x, 0, cueDir.z)) * 0.3
+        let adjustedDir = simd_normalize(cueDir + spinEffect)
+        let adjustedDir2D = simd_normalize(SIMD2<Float>(adjustedDir.x, adjustedDir.z))
+        balls[0].velocity = adjustedDir2D * (baseSpeed * velocityScale)
 
         powerAtRelease = 0.0
     }
@@ -1012,19 +1046,19 @@ final class BilliardSimulation: ObservableObject {
         self.resolution = SIMD2<Float>(Float(viewSize.width), Float(viewSize.height))
 
         let whiteBall = balls[0]
-        var cameraPosition = SIMD3<Float>(0, 2.0, 0)
+        var cameraPosition = SIMD3<Float>(0,2.0,0)
         var cameraTarget = SIMD3<Float>(whiteBall.position.x, whiteBall.height, whiteBall.position.y)
         let speed = simd_length(whiteBall.velocity)
 
         if speed < 0.01 {
             let stationaryDistance: Float = 2.5
-            var offset = SIMD3<Float>(0, 0, stationaryDistance)
+            var offset = SIMD3<Float>(0,0,stationaryDistance)
             offset = rotateY(offset, -cue3DRotate.x)
             cameraPosition = cameraTarget + offset
             cameraPosition.y = 0.7
         } else {
-            let forward = simd_normalize(SIMD3<Float>(whiteBall.velocity.x, 0, whiteBall.velocity.y))
-            cameraPosition = cameraTarget - (forward * 3.0)
+            let forward = simd_normalize(SIMD3<Float>(whiteBall.velocity.x,0,whiteBall.velocity.y))
+            cameraPosition = cameraTarget - forward*3.0
             cameraPosition.y += 1.0
         }
 
@@ -1061,23 +1095,23 @@ final class BilliardSimulation: ObservableObject {
         self.resolution = SIMD2<Float>(Float(viewSize.width), Float(viewSize.height))
 
         let whiteBall = balls[0]
-        var cameraPosition = SIMD3<Float>(0, 2.0, 0)
+        var cameraPosition = SIMD3<Float>(0,2.0,0)
         var cameraTarget = SIMD3<Float>(whiteBall.position.x, whiteBall.height, whiteBall.position.y)
         let speed = simd_length(whiteBall.velocity)
 
         if speed < 0.01 {
             let stationaryDistance: Float = 7.0
-            var offset = SIMD3<Float>(0, 0, stationaryDistance)
+            var offset = SIMD3<Float>(0,0,stationaryDistance)
             offset = rotateX(offset, cue3DRotate.y)
             offset = rotateY(offset, -cue3DRotate.x)
             cameraPosition = cameraTarget + offset
             let cueBaseHeight: Float = 0.01
             let cueAngleVertical = cue3DRotate.y
-            let verticalAdjustment = sin(cueAngleVertical) * stationaryDistance
+            let verticalAdjustment = sin(cueAngleVertical)*stationaryDistance
             cameraPosition.y = cueBaseHeight + verticalAdjustment + 0.7
         } else {
-            let forward = simd_normalize(SIMD3<Float>(whiteBall.velocity.x, 0, whiteBall.velocity.y))
-            cameraPosition = cameraTarget - (forward * 8.0)
+            let forward = simd_normalize(SIMD3<Float>(whiteBall.velocity.x,0,whiteBall.velocity.y))
+            cameraPosition = cameraTarget - forward*8.0
             cameraPosition.y += 1.0
         }
 
@@ -1111,7 +1145,7 @@ final class BilliardSimulation: ObservableObject {
     }
 }
 
-// MARK: - SwiftUI MTKViews
+// MARK: - SwiftUI Views
 struct OrbitingMetalView: UIViewRepresentable {
     @ObservedObject var simulation: BilliardSimulation
 
@@ -1208,7 +1242,7 @@ struct ThirdBallMetalView: UIViewRepresentable {
     func updateUIView(_ uiView: MTKView, context: Context) {}
 }
 
-// MARK: - ContentView
+// MARK: - Main ContentView
 struct ContentView: View {
     @StateObject private var simulation = BilliardSimulation()!
     @State private var viewSizeBehind: CGSize = .zero
@@ -1224,7 +1258,10 @@ struct ContentView: View {
         ZStack {
             OrbitingMetalView(simulation: simulation)
                 .edgesIgnoringSafeArea(.all)
-                .overlay(Text("Orbiting Camera").foregroundColor(.white).padding(), alignment: .top)
+                .overlay(Text("Orbiting Camera")
+                    .foregroundColor(.white)
+                    .padding(),
+                         alignment: .top)
                 .gesture(
                     DragGesture(minimumDistance: 0)
                         .onChanged { _ in simulation.isTouching = true }
@@ -1235,8 +1272,8 @@ struct ContentView: View {
                 Spacer()
                 HStack {
                     BehindBallMetalView(simulation: simulation)
-                        .frame(width: UIScreen.main.bounds.width / 2,
-                               height: UIScreen.main.bounds.width / 2)
+                        .frame(width: UIScreen.main.bounds.width/2,
+                               height: UIScreen.main.bounds.width/2)
                         .background(
                             GeometryReader { geo in
                                 Color.clear
@@ -1244,7 +1281,10 @@ struct ContentView: View {
                                     .onChange(of: geo.size) { newSize in viewSizeBehind = newSize }
                             }
                         )
-                        .overlay(Text("Behind-Ball Camera").foregroundColor(.white).padding(), alignment: .top)
+                        .overlay(Text("Behind-Ball Camera")
+                            .foregroundColor(.white)
+                            .padding(),
+                                 alignment: .top)
                         .gesture(
                             DragGesture(minimumDistance: 0)
                                 .onChanged { value in
@@ -1263,7 +1303,7 @@ struct ContentView: View {
                                             -deltaY * scaleFactor
                                         )
                                         let offsetLength = simd_length(newOffset)
-                                        if (offsetLength > simulation.maxTipOffset) {
+                                        if offsetLength > simulation.maxTipOffset {
                                             newOffset *= simulation.maxTipOffset / offsetLength
                                         }
                                         simulation.cueTipOffset = newOffset
@@ -1276,8 +1316,8 @@ struct ContentView: View {
                         )
 
                     ThirdBallMetalView(simulation: simulation)
-                        .frame(width: UIScreen.main.bounds.width / 2,
-                               height: UIScreen.main.bounds.width / 2)
+                        .frame(width: UIScreen.main.bounds.width/2,
+                               height: UIScreen.main.bounds.width/2)
                         .background(
                             GeometryReader { geo in
                                 Color.clear
@@ -1285,7 +1325,9 @@ struct ContentView: View {
                                     .onChange(of: geo.size) { newSize in viewSizeThird = newSize }
                             }
                         )
-                        .overlay(Text("Third-Ball Camera (3D Cue Rotation)").foregroundColor(.white).padding(),
+                        .overlay(Text("Third-Ball Camera (3D Cue Rotation)")
+                            .foregroundColor(.white)
+                            .padding(),
                                  alignment: .top)
                         .gesture(
                             DragGesture(minimumDistance: 0)
@@ -1313,9 +1355,9 @@ struct ContentView: View {
             }
         }
         .onAppear {
-            let timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { _ in
-                simulation.time += 1.0 / 60.0
-                simulation.updatePhysics(deltaTime: 1.0 / 60.0)
+            let timer = Timer.scheduledTimer(withTimeInterval: 1.0/60.0, repeats: true) { _ in
+                simulation.time += 1.0/60.0
+                simulation.updatePhysics(deltaTime: 1.0/60.0)
             }
             RunLoop.current.add(timer, forMode: .common)
         }
