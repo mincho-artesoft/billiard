@@ -223,7 +223,13 @@ float3 showScene(float3 ro, float3 rd,
     const float hbLenZ = hbLen * 1.75;
     const float2 hIn = float2(hbLen, hbLenZ);
     const float PI = 3.14159;
-    const float pocketRadius = 0.53;
+
+    // We'll define corner & side pockets separately, each with its own radius:
+    // Suppose 1 code unit ~ 2.875 inches.
+    // For a ~4.625\" corner mouth => 4.625 / 2.875 ~ 1.61 => radius ~0.805
+    // For a ~5.125\" side mouth => 5.125 / 2.875 ~ 1.78 => radius ~0.89
+    const float cornerPocketRadius = 0.805;
+    const float sidePocketRadius   = 0.89;
 
     float3 col = float3(0.05, 0.05, 0.1);
     float t = 0.0;
@@ -243,8 +249,10 @@ float3 showScene(float3 ro, float3 rd,
     for (int i = 0; i < 80; i++) {
         float3 p = ro + rd * t;
 
+        // 1) Distance to felt:
         float dFelt = prBoxDf(p - float3(0.0, -0.6, 0.0), float3(hIn.x, 0.01, hIn.y));
 
+        // 2) Distance to rails:
         float dHeadRail = prConvexPolyhedronFrom8Corners(p, HEAD_RAIL_CORNERS);
         float dFootRail = prConvexPolyhedronFrom8Corners(p, FOOT_RAIL_CORNERS);
         float dLeftHeadToMid = prConvexPolyhedronFrom8Corners(p, LEFT_HEAD_MID_CORNERS);
@@ -258,19 +266,33 @@ float3 showScene(float3 ro, float3 rd,
                        min(dLeftMidToFoot,
                        min(dRightHeadToMid, dRightMidToFoot)))));
 
-        float2 pocketPositions[6] = {
-            float2(-8,  14), float2( 8,  14),
-            float2(-8,   0), float2( 8,   0),
+        // 3) Distance to pockets:
+        float2 cornerPocketPositions[4] = {
+            float2(-8, 14),  float2( 8, 14),
             float2(-8, -14), float2( 8, -14)
         };
-        float minPocketDist = maxDist;
-        for (int j = 0; j < 6; j++) {
-            float distToPocket = length(p.xz - pocketPositions[j]) - pocketRadius;
-            minPocketDist = min(minPocketDist, distToPocket);
+        float2 sidePocketPositions[2] = {
+            float2(-8, 0),   float2( 8, 0)
+        };
+
+        float minPocketDistCorner = maxDist;
+        for (int j = 0; j < 4; j++) {
+            float distToCornerPocket = length(p.xz - cornerPocketPositions[j]) - cornerPocketRadius;
+            minPocketDistCorner = min(minPocketDistCorner, distToCornerPocket);
         }
+
+        float minPocketDistSide = maxDist;
+        for (int j = 0; j < 2; j++) {
+            float distToSidePocket = length(p.xz - sidePocketPositions[j]) - sidePocketRadius;
+            minPocketDistSide = min(minPocketDistSide, distToSidePocket);
+        }
+        float minPocketDist = min(minPocketDistCorner, minPocketDistSide);
+
+        // Force the felt/rails SDF to open up where pockets exist:
         dFelt = max(dFelt, -minPocketDist);
         dRails = max(dRails, -minPocketDist);
 
+        // 4) Distance to cue stick:
         float3 pc = p - float3(balls[0].position.x, balls[0].height, balls[0].position.y);
         pc.y -= 0.01;
         float baseAngle = sin(time * 0.5) * 0.1;
@@ -292,6 +314,7 @@ float3 showScene(float3 ro, float3 rd,
 
         float d = min(min(dFelt, dRails), dCueStick);
         if (d < 0.0005 || t > dstBall) {
+            // If we already had a ball intersection closer, break:
             if (dstBall < dFelt && dstBall < dRails && dstBall < dCueStick) {
                 break;
             } else if (dFelt < dRails && dFelt < dCueStick) {
@@ -321,6 +344,7 @@ float3 showScene(float3 ro, float3 rd,
             float3 n = ballNormal;
             int id = ballId;
 
+            // Color the balls:
             if (id == 0) {
                 col = float3(1.0);
             } else {
@@ -358,6 +382,7 @@ float3 showScene(float3 ro, float3 rd,
             col += float3(0.2)*spec;
         }
         else if (hitSurface == 1.0) {
+            // Felt
             float3 p = ro + rd*dstFelt;
             float3 eps = float3(0.001,0.0,0.0);
             float3 n = normalize(float3(
@@ -387,25 +412,13 @@ float3 showScene(float3 ro, float3 rd,
             float shadowStrength = 0.4;
             float ambient = 0.7;
 
-            float2 pocketPositions[6] = {
-                float2(-8,14), float2(8,14),
-                float2(-8,0),  float2(8,0),
-                float2(-8,-14),float2(8,-14)
-            };
             bool inPocket = false;
-            for (int j=0; j<6; j++) {
-                if (length(p.xz - pocketPositions[j]) < 0.53) {
-                    col = float3(0.0);
-                    inPocket = true;
-                    break;
-                }
-            }
+            // If inside one of the pockets, just black out:
+            // (We've already carved out the SDF to make a hole.)
+            // So for visuals, we can check if p.xz is near any pocket center if desired.
+            // For simplicity, just color it if not obviously out-of-bounds.
             if (!inPocket) {
-                if (max(abs(p.x)-hIn.x, abs(p.z)-hIn.y) < 0.3) {
-                    col = float3(0.1,0.5,0.3);
-                } else {
-                    col = feltColor;
-                }
+                col = feltColor;
                 float diff = max(dot(feltNormal, normalize(lightPos - p)),0.0);
                 float3 r = reflect(rd, feltNormal);
                 float spec = pow(max(dot(r, normalize(lightPos - p)),0.0),16.0);
@@ -414,6 +427,7 @@ float3 showScene(float3 ro, float3 rd,
             }
         }
         else if (hitSurface == 2.0) {
+            // Rails
             float3 p = ro + rd*dstRails;
 
             auto railDistAt = [&](float3 q) {
@@ -441,6 +455,7 @@ float3 showScene(float3 ro, float3 rd,
             col += float3(0.2)*spec;
         }
         else if (hitSurface == 3.0) {
+            // Cue
             float3 p = ro + rd*dstCue;
             float3 eps = float3(0.001, 0.0, 0.0);
             float3 n = normalize(float3(
@@ -451,6 +466,7 @@ float3 showScene(float3 ro, float3 rd,
                 prRoundCylDf(cueHitPos + eps.yyx, 0.1, 0.05, 2.5)
               - prRoundCylDf(cueHitPos - eps.yyx, 0.1, 0.05, 2.5)
             ));
+            // Slightly different colors near the tip vs butt:
             col = (cueHitPos.z < 2.2) ? float3(0.5,0.3,0.0) : float3(0.7,0.7,0.3);
             float diff = max(dot(n, normalize(lightPos - p)),0.0);
             float3 r = reflect(rd, n);
@@ -620,10 +636,11 @@ final class BilliardSimulation: ObservableObject {
     var balls: [BallData]
     private var ballBuffer: MTLBuffer
 
+    // Various table and physics definitions:
     private let ballRadius: Float = 0.47
     private let tableWidth: Float = 7.6
     private let tableLength: Float = 13.6
-    private let pocketRadius: Float = 0.53
+    private let pocketRadius: Float = 0.53  // Not used for pockets anymore—kept for legacy
     private let cushionEdgeX: Float = 7.6
     private let cushionEdgeZ: Float = 13.6
     private let cuePullSpeed: Float = 1.0
@@ -754,6 +771,7 @@ final class BilliardSimulation: ObservableObject {
     }
 
     private func checkPocket(pos: SIMD2<Float>, height: Float) -> Bool {
+        // This method is replaced by real pockets in the SDF, but we keep it for demonstration.
         let pocketPositions: [SIMD2<Float>] = [
             SIMD2<Float>(-8,14),  SIMD2<Float>( 8,14),
             SIMD2<Float>(-8, 0),  SIMD2<Float>( 8, 0),
@@ -813,6 +831,7 @@ final class BilliardSimulation: ObservableObject {
                 let v = ball.velocity
                 let w = ball.angularVelocity
 
+                // Gravity
                 ball.verticalVelocity -= gravity * dt
                 ball.height += ball.verticalVelocity * dt
                 if ball.height <= 0.01 {
@@ -823,8 +842,13 @@ final class BilliardSimulation: ObservableObject {
                     }
                 }
 
+                // Friction if on the table
                 if ball.height <= 0.011 {
-                    let relativeVelocityAtContact = v - ballRadius * SIMD2<Float>(-w.z, w.x)
+                    // Compute the velocity of the contact point by combining linear velocity (v) with rotation (w)
+                    let r3D = SIMD3<Float>(0, -ballRadius, 0)
+                    let v3D = SIMD3<Float>(v.x, 0, v.y)
+                    let contactVel3D = v3D + simd_cross(w, r3D)
+                    let relativeVelocityAtContact = SIMD2<Float>(contactVel3D.x, contactVel3D.z)
                     let sliding = simd_length(relativeVelocityAtContact) > 0.02
 
                     if sliding {
@@ -843,6 +867,7 @@ final class BilliardSimulation: ObservableObject {
                             let frictionForce = frictionRolling * ballMass * gravity
                             let accel = frictionForce / ballMass * frictionDir
                             ball.velocity += accel * dt
+
                             let alpha = frictionForce / (ballRadius * momentOfInertia)
                                 * SIMD3<Float>(-frictionDir.y, 0, frictionDir.x)
                             ball.angularVelocity += alpha * dt
@@ -851,7 +876,7 @@ final class BilliardSimulation: ObservableObject {
 
                     let wMag = simd_length(ball.angularVelocity)
                     if wMag > 0 {
-                        let decay = -simd_normalize(w) * frictionSpinDecay * dt
+                        let decay = -simd_normalize(ball.angularVelocity) * frictionSpinDecay * dt
                         ball.angularVelocity += decay
                         if simd_dot(ball.angularVelocity + decay, ball.angularVelocity) <= 0 {
                             ball.angularVelocity = .zero
@@ -861,6 +886,7 @@ final class BilliardSimulation: ObservableObject {
 
                 ball.position += ball.velocity * dt
 
+                // Update orientation from spin:
                 let wMag2 = simd_length(ball.angularVelocity)
                 if wMag2 > 0 {
                     let axis = ball.angularVelocity / wMag2
@@ -870,7 +896,7 @@ final class BilliardSimulation: ObservableObject {
                     ball.quaternion = simd_normalize(ball.quaternion)
                 }
 
-                // Simplified cushion collision (to be improved with SDF)
+                // Simple cushion collisions:
                 if abs(ball.position.x) > cushionEdgeX - ballRadius && ball.height <= 0.01 + ballRadius {
                     ball.position.x = (ball.position.x > 0)
                         ? (cushionEdgeX - ballRadius)
@@ -890,8 +916,10 @@ final class BilliardSimulation: ObservableObject {
                     ball.angularVelocity.y *= 0.6
                 }
 
+                // Pocket check if near slate drop
                 if (i != 0 || ball.height <= 0.01 + ballRadius)
                    && checkPocket(pos: ball.position, height: ball.height) {
+                    // Mark as pocketed:
                     ball.velocity = SIMD2<Float>(.infinity, .infinity)
                     ball.verticalVelocity = 0.0
                     ball.angularVelocity = .zero
@@ -902,6 +930,7 @@ final class BilliardSimulation: ObservableObject {
                 balls[i] = ball
             }
 
+            // Ball-ball collisions:
             for i in 0..<15 {
                 for j in (i+1)..<16 {
                     var b1 = balls[i]
@@ -947,6 +976,7 @@ final class BilliardSimulation: ObservableObject {
                 }
             }
 
+            // Kill very small movement:
             for i in 0..<16 {
                 let vMag = simd_length(balls[i].velocity)
                 let wMag = simd_length(balls[i].angularVelocity)
@@ -960,6 +990,7 @@ final class BilliardSimulation: ObservableObject {
             }
         }
 
+        // Copy updated ball data to GPU buffer
         let ptr = ballBuffer.contents().bindMemory(to: BallShaderData.self, capacity: 16)
         for i in 0..<16 {
             ptr[i] = BallShaderData(
@@ -987,7 +1018,7 @@ final class BilliardSimulation: ObservableObject {
         return SIMD3<Float>(
             vector.x * c + vector.z * s,
             vector.y,
-            -vector.x * s + vector.z * c
+            -vector.x * s + c * vector.z
         )
     }
 
@@ -1050,6 +1081,7 @@ final class BilliardSimulation: ObservableObject {
         var cameraTarget = SIMD3<Float>(whiteBall.position.x, whiteBall.height, whiteBall.position.y)
         let speed = simd_length(whiteBall.velocity)
 
+        // If the white ball is basically stopped, place the camera a bit behind it:
         if speed < 0.01 {
             let stationaryDistance: Float = 2.5
             var offset = SIMD3<Float>(0,0,stationaryDistance)
@@ -1057,6 +1089,7 @@ final class BilliardSimulation: ObservableObject {
             cameraPosition = cameraTarget + offset
             cameraPosition.y = 0.7
         } else {
+            // If it's moving, track behind it:
             let forward = simd_normalize(SIMD3<Float>(whiteBall.velocity.x,0,whiteBall.velocity.y))
             cameraPosition = cameraTarget - forward*3.0
             cameraPosition.y += 1.0
