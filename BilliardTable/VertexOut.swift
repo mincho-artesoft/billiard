@@ -227,7 +227,7 @@ float map(float3 p, thread float& hitType, thread float& pocketDist) {
     hitType = 0.0; // 0=miss, 1=felt, 2=rail, 3=pocket_hole
     pocketDist = 1000.0;
 
-    // Bounding Sphere
+    // Bounding Sphere (Keep as is)
     float sceneRadius = max(TABLE_HALF_WIDTH, TABLE_HALF_LENGTH) + 2.0;
     float boundsDist = length(p.xz) - sceneRadius;
     boundsDist = max(boundsDist, abs(p.y) - 5.0);
@@ -251,28 +251,29 @@ float map(float3 p, thread float& hitType, thread float& pocketDist) {
     dRails = min(dRails, min(dLeftRailFar, dLeftRailNear));
     dRails = min(dRails, min(dRightRailFar, dRightRailNear));
 
-    // Pocket SDFs (Adjust Y positions to account for felt at y = -0.6)
+    // Pocket SDFs (Calculate raw distance to pocket cylinders)
     float dPocketCorners = 1000.0;
     for (int i = 0; i < 4; ++i) dPocketCorners = min(dPocketCorners, sdPocket(p - float3(0.0, -0.6, 0.0), CORNER_POCKET_CENTERS[i], CORNER_POCKET_R));
     float dPocketSides = 1000.0;
     for (int i = 0; i < 2; ++i) dPocketSides = min(dPocketSides, sdPocket(p - float3(0.0, -0.6, 0.0), SIDE_POCKET_CENTERS[i], SIDE_POCKET_R));
     float dPockets = min(dPocketCorners, dPocketSides);
-    pocketDist = dPockets;
+    pocketDist = dPockets; // Store raw pocket distance
 
-    // Combine Rails and Pockets
-    float dEnvironment = max(dRails, -dPockets);
+    // --- MODIFIED LOGIC ---
+    // Find distance to nearest *solid* surface (felt or rail)
+    float dSolid = min(dFelt, dRails);
 
-    // Final Combination
-    float d = dFelt;
-    float finalHitType = 1.0;
-    if (dEnvironment < d) {
-        d = dEnvironment;
-        if (pocketDist < -0.01) finalHitType = 3.0;
-        else finalHitType = 2.0;
+    // Determine preliminary hit type based ONLY on solid surfaces
+    if (dSolid == dFelt) {
+        hitType = 1.0; // Felt
+    } else { // dSolid == dRails
+        hitType = 2.0; // Rail
     }
-    hitType = finalHitType;
+    // NOTE: We no longer use `max(dRails, -dPockets)` here.
+    // The check for whether the hit point is *in* a pocket happens later in showScene.
 
-    return d;
+    // Return distance to the nearest solid surface.
+    return dSolid;
 }
 
 float3 getNormal(float3 p, thread float& hitType, thread float& pocketDist) {
@@ -290,7 +291,7 @@ float3 getNormal(float3 p, thread float& hitType, thread float& pocketDist) {
 }
 
 // -------------------------------------
-//   5) showScene (Restored Original Cue Positioning and Appearance)
+//   5) showScene (With Restored Cue Stick)
 // -------------------------------------
 float3 showScene(float3 ro, float3 rd,
                  float time,
@@ -298,25 +299,28 @@ float3 showScene(float3 ro, float3 rd,
                  float2 cueTipOffset,
                  constant Ball* balls [[buffer(2)]],
                  int cueVisible,
-                 float cueAngle,
+                 float cueAngle, /* Note: cueAngle is passed but not used in this version of showScene */
                  float2 cue3DRotate)
 {
     float3 col = float3(0.05, 0.05, 0.1); // Default Background
     float t = 0.0;
     const float maxDist = 50.0;
 
+    // --- Distance to Balls ---
     float dstBall;
     float3 ballNormal;
     int ballId;
     ballHit(ro, rd, dstBall, ballNormal, ballId, balls);
 
+    // --- Raymarching Setup ---
     float hitDist = maxDist;
     float hitType = 0.0; // 0=miss, 1=felt, 2=rail, 3=pocket_hole, 4=ball, 5=cue
-    float pocketDist = 1000.0;
-    float3 cueHitPos; // Local coords for cue shading
+    float pocketDistAtHit = 1000.0; // Store pocket distance at the final hit point
+    float3 cueHitPos; // Local coordinates for cue shading
 
+    // --- Raymarching Loop ---
     for (int i = 0; i < 80; i++) {
-        float3 p = ro + rd * t;
+        float3 p = ro + rd * t; // Current point along the ray
 
         // --- Distance to Cue Stick (Restored Original Logic with Adjusted Height) ---
         float dCueStick = maxDist;
@@ -337,97 +341,166 @@ float3 showScene(float3 ro, float3 rd,
             cueHitPos = pc;
         }
 
-        // --- Distance to Felt/Rails/Pockets ---
-        float currentHitType = 0.0;
-        float currentPocketDist = 1000.0;
-        float dEnv = map(p, currentHitType, currentPocketDist);
+        // --- Distance to Environment (Felt/Rails - Pockets calculated separately now) ---
+        float mapHitType = 0.0; // Preliminary hit type from map (1=felt, 2=rail)
+        float mapPocketDist = 1000.0; // Raw distance to pocket cylinders from map
+        float dEnv = map(p, mapHitType, mapPocketDist); // Use the corrected map function
 
-        // Find minimum distance
+        // --- Find Minimum Distance to any object ---
         float d = min(dEnv, dCueStick);
 
-        // --- Hit Detection ---
-        if (d < 0.0005 || t > dstBall) {
-            if (dstBall <= t + 0.001 && dstBall < maxDist) {
-                 hitDist = dstBall;
-                 hitType = 4.0;
-            } else if (dEnv <= dCueStick) {
-                 hitDist = t;
-                 hitType = currentHitType;
-                 pocketDist = currentPocketDist;
-            } else if (dCueStick < maxDist) {
-                 hitDist = t;
-                 hitType = 5.0;
-            } else {
-                 hitDist = maxDist;
-                 hitType = 0.0;
-            }
-             break;
-        }
+        // --- Hit Detection Logic ---
+        if (d < 0.0005 || t > dstBall) { // Potential hit detected (close enough or passed ball intersection)
 
-        // Step forward
-        t += max(d * 0.7, 0.001);
+            if (dstBall <= t + 0.001 && dstBall < maxDist) { // Ray hits a BALL first
+                 hitDist = dstBall;
+                 hitType = 4.0; // Ball hit type
+
+            } else if (dEnv <= dCueStick) { // Ray hits ENVIRONMENT (Felt or Rail surface) first
+                 hitDist = t;
+
+                 // *** Pocket Check at the Precise Hit Point ***
+                 // Calculate the distance to the pocket shapes *at the hit point p*
+                 float finalPocketDist = 1000.0;
+                 float3 p_adjusted = p - float3(0.0, -0.6, 0.0); // Adjust hit point relative to felt plane for pocket SDF
+
+                 // Corner Pockets
+                 float finalPocketCorners = 1000.0;
+                 for (int k = 0; k < 4; ++k) {
+                     finalPocketCorners = min(finalPocketCorners, sdPocket(p_adjusted, CORNER_POCKET_CENTERS[k], CORNER_POCKET_R));
+                 }
+                 // Side Pockets
+                 float finalPocketSides = 1000.0;
+                 for (int k = 0; k < 2; ++k) {
+                     finalPocketSides = min(finalPocketSides, sdPocket(p_adjusted, SIDE_POCKET_CENTERS[k], SIDE_POCKET_R));
+                 }
+                 finalPocketDist = min(finalPocketCorners, finalPocketSides);
+                 pocketDistAtHit = finalPocketDist; // Store this final pocket distance
+
+                 // Check if the hit point is *inside* a pocket cylinder
+                 if (finalPocketDist < -0.01) { // Use a small negative threshold to be safely inside
+                     hitType = 3.0; // Yes -> It's a Pocket Hole
+                 } else {
+                     hitType = mapHitType; // No -> It's the solid surface map detected (Felt=1 or Rail=2)
+                 }
+                 // *** End Pocket Check ***
+
+            } else if (dCueStick < maxDist) { // Ray hits CUE STICK first
+                 hitDist = t;
+                 hitType = 5.0; // Cue hit type
+
+            } else { // Ray missed everything or went beyond max distance
+                 hitDist = maxDist;
+                 hitType = 0.0; // Miss
+            }
+             break; // Exit the raymarching loop on any hit or miss determination
+        } // End Hit Detection
+
+        // --- Advance Ray ---
+        // Step forward along the ray direction. Use a safe step size.
+        t += max(d * 0.7, 0.001); // 0.7 is a safety factor, 0.001 ensures progress
+
+        // --- Check Max Distance ---
         if (t > maxDist) {
             hitDist = maxDist;
-            hitType = 0.0;
-            break;
+            hitType = 0.0; // Miss
+            break; // Exit loop if max distance is exceeded
         }
-    }
+    } // --- End Raymarching Loop ---
 
     // --- Shading ---
-    if (hitType > 0.0) {
-        float3 p = ro + rd * hitDist;
-        float3 n;
-        float3 lightPos = float3(0.0, 20.0, 0.0);
-        float3 lightDir = normalize(lightPos - p);
-        float ambient = 0.4;
+    if (hitType > 0.0) { // If we hit something (not the background)
+        float3 p = ro + rd * hitDist; // Calculate the precise hit point
+        float3 n;                     // Normal vector at the hit point
+        float3 lightPos = float3(0.0, 20.0, 0.0); // Simple overhead light position
+        float3 lightDir = normalize(lightPos - p); // Direction from hit point to light
+        float ambient = 0.4;          // Ambient light factor
 
-        if (hitType == 1.0) { // Felt
-            n = getNormal(p, hitType, pocketDist);
+        // Calculate Normal and Apply Material Shading based on hitType
+        if (hitType == 1.0) { // --- Felt Shading ---
+            float ignoredHitType; // We know it's felt here
+            // Pass pocketDistAtHit, though getNormal won't use it differently for felt vs rail based on map
+            n = getNormal(p, ignoredHitType, pocketDistAtHit);
             float2 feltUV = p.xz * 0.5; float feltNoise = fbm(feltUV, 4); float fiberDetail = noise(feltUV*15.0);
             float3 feltBaseColor = float3(0.1, 0.5, 0.2); float3 fiberColor = float3(0.05,0.3,0.1);
             float fiberMix = smoothstep(0.6, 0.8, fiberDetail); float3 feltColor = mix(feltBaseColor, fiberColor, fiberMix);
-            feltColor *= (0.8 + 0.2*feltNoise);
-            float diff = max(dot(n, lightDir), 0.0); float3 r = reflect(rd, n); float spec = pow(max(dot(r, lightDir), 0.0), 8.0);
-            col = feltColor * (ambient + (1.0-ambient)*diff); col += float3(0.05)*spec*(0.5 + 0.5*feltNoise);
+            feltColor *= (0.8 + 0.2*feltNoise); // Apply larger scale noise variation
+            float diff = max(dot(n, lightDir), 0.0); // Diffuse lighting
+            float3 r = reflect(rd, n); // Reflection vector for specular
+            float spec = pow(max(dot(r, lightDir), 0.0), 8.0); // Specular highlight (low power for felt)
+            col = feltColor * (ambient + (1.0-ambient)*diff); // Combine ambient and diffuse
+            col += float3(0.05)*spec*(0.5 + 0.5*feltNoise); // Add specular highlight modulated by noise
 
-        } else if (hitType == 2.0) { // Rail
-            n = getNormal(p, hitType, pocketDist);
-            col = float3(0.4, 0.25, 0.15);
-            float diff = max(dot(n, lightDir), 0.0); float3 r = reflect(rd, n); float spec = pow(max(dot(r, lightDir), 0.0), 32.0);
-            col *= (ambient + (1.0-ambient)*diff); col += float3(0.4)*spec;
+        } else if (hitType == 2.0) { // --- Rail Shading ---
+             float ignoredHitType; // We know it's rail here
+             // Pass pocketDistAtHit (which will be >= 0 here)
+            n = getNormal(p, ignoredHitType, pocketDistAtHit);
+            col = float3(0.4, 0.25, 0.15); // Wood color for rails
+            float diff = max(dot(n, lightDir), 0.0); // Diffuse
+            float3 r = reflect(rd, n); // Reflection vector
+            float spec = pow(max(dot(r, lightDir), 0.0), 32.0); // Sharper specular for wood
+            col *= (ambient + (1.0-ambient)*diff); // Combine ambient and diffuse
+            col += float3(0.4)*spec; // Add specular highlight
 
-        } else if (hitType == 3.0) { // Pocket Hole
-            col = float3(0.01, 0.01, 0.01);
+        } else if (hitType == 3.0) { // --- Pocket Hole Shading ---
+            col = float3(0.01, 0.01, 0.01); // Very dark color, no lighting needed
 
-        } else if (hitType == 4.0) { // Ball
-            n = ballNormal; int id = ballId;
-            if (id == 0) { col = float3(1.0); } else {
-                bool isStriped = (id >= 9); float3 baseColor;
-                if (id == 8) { baseColor = float3(0.0); } else {
+        } else if (hitType == 4.0) { // --- Ball Shading ---
+            n = ballNormal; // Normal comes directly from ballHit function
+            int id = ballId; // Ball ID comes directly from ballHit function
+
+            // Determine Base Color based on Ball ID
+            if (id == 0) { col = float3(1.0); } // Cue ball is white
+            else {
+                bool isStriped = (id >= 9); // Balls 9-15 are striped
+                float3 baseColor;
+                if (id == 8) { baseColor = float3(0.0); } // 8-ball is black
+                else { // Calculate color based on hue for other balls
                     float hue = 0.0;
-                    if(id==1 || id==9) hue = 1.0/6.0; if(id==2 || id==10) hue = 4.0/6.0;
-                    if(id==3 || id==11) hue = 0.0/6.0; if(id==4 || id==12) hue = 5.0/6.0;
-                    if(id==5 || id==13) hue = 0.5/6.0; if(id==6 || id==14) hue = 2.0/6.0;
-                    if(id==7 || id==15) hue = 0.25/6.0;
-                    baseColor = hsvToRgb(float3(hue, 1.0, 1.0));
+                    if(id==1 || id==9) hue = 1.0/6.0; // Yellow
+                    if(id==2 || id==10) hue = 4.0/6.0; // Blue
+                    if(id==3 || id==11) hue = 0.0/6.0; // Red
+                    if(id==4 || id==12) hue = 5.0/6.0; // Purple
+                    if(id==5 || id==13) hue = 0.5/6.0; // Orange
+                    if(id==6 || id==14) hue = 2.0/6.0; // Green
+                    if(id==7 || id==15) hue = 0.25/6.0; // Maroon/Brownish
+                    baseColor = hsvToRgb(float3(hue, 1.0, 1.0)); // Convert HSV to RGB
                 }
+
+                // Apply Rotation using Quaternion
                 float3x3 rotMat = qtToRMat(balls[id].quaternion);
-                float3 rotatedNormal = rotMat * n;
+                float3 rotatedNormal = rotMat * n; // Rotate the local normal based on ball's orientation
+
+                // Calculate UV coordinates based on rotated normal for patterns
                 float2 uv = float2(atan2(rotatedNormal.x, rotatedNormal.z)/(2.0*PI) + 0.5, acos(rotatedNormal.y)/PI);
-                if (isStriped && id != 8) {
-                    float stripeWidth = 0.3;
+
+                // Apply Stripe Pattern
+                if (isStriped && id != 8) { // Apply stripe for balls 9-15
+                    float stripeWidth = 0.3; // Width of the colored stripe
+                    // Mix white and baseColor based on latitude (uv.y)
                     col = mix(float3(1.0), baseColor, step(stripeWidth, uv.y) * step(uv.y, 1.0 - stripeWidth));
                 } else {
-                    col = baseColor;
+                    col = baseColor; // Solid balls just use baseColor
                 }
-                float2 circleCenter = float2(0.5, 0.5); float circleRadius = 0.2;
-                float distToCenter = length(uv - circleCenter);
-                if (distToCenter < circleRadius && id != 0) { col = float3(1.0); }
-            }
-            float diff = max(dot(n, lightDir), 0.0); col *= (ambient + (1.0-ambient)*diff);
-            float3 r = reflect(rd, n); float spec = pow(max(dot(r, lightDir), 0.0), 24.0); col += float3(0.3)*spec;
 
-        } else if (hitType == 5.0) { // Cue Stick (Restored Original Shading)
+                // Apply Number Circle (White Circle)
+                float2 circleCenter = float2(0.5, 0.5); // Center of the UV map
+                float circleRadius = 0.2; // Radius of the white number circle
+                float distToCenter = length(uv - circleCenter);
+                if (distToCenter < circleRadius && id != 0) { // If inside circle and not cue ball
+                    col = float3(1.0); // Make it white
+                }
+                // Could add number texture lookup here later using UVs
+            }
+
+            // Apply Standard Lighting
+            float diff = max(dot(n, lightDir), 0.0); // Diffuse
+            col *= (ambient + (1.0-ambient)*diff); // Combine ambient and diffuse
+            float3 r = reflect(rd, n); // Reflection vector
+            float spec = pow(max(dot(r, lightDir), 0.0), 24.0); // Specular highlight for shiny balls
+            col += float3(0.3)*spec; // Add specular
+
+        } else if (hitType == 5.0) { // --- Cue Stick Shading (Restored Original) ---
             float3 eps = float3(0.0005, 0.0, 0.0);
             n = normalize(float3(
                 prRoundCylDf(cueHitPos + eps.xyy, 0.1, 0.05, CUE_LENGTH) - prRoundCylDf(cueHitPos - eps.xyy, 0.1, 0.05, CUE_LENGTH),
@@ -442,12 +515,17 @@ float3 showScene(float3 ro, float3 rd,
             col *= (0.3 + 0.7*diff);
             col += float3(0.2)*spec;
         }
-    } else {
-        // Background
+
+    } else { // --- Background Shading ---
+        // Ray missed everything, use the default background color
         col = float3(0.05, 0.05, 0.1);
+        // Could add a sky gradient or stars here
+        // float sky = max(rd.y, 0.0);
+        // col = mix(float3(0.1, 0.1, 0.2), float3(0.3, 0.4, 0.6), sky);
     }
 
-    return clamp(col, 0.0, 1.0);
+    // Final Color Clamping
+    return clamp(col, 0.0, 1.0); // Ensure color values are within valid range
 }
 
 // -------------------------------------
@@ -615,7 +693,8 @@ final class BilliardSimulation: ObservableObject {
     private var cueTipOffsetBuffer: MTLBuffer
     private var cueAngleBuffer: MTLBuffer
     private var cue3DRotateBuffer: MTLBuffer
-
+    private let tableHalfLength: Float = 13.6
+    
     init?() {
         guard let dev = MTLCreateSystemDefaultDevice(),
               let cq = dev.makeCommandQueue() else {
@@ -664,24 +743,37 @@ final class BilliardSimulation: ObservableObject {
             return nil
         }
 
-        let identityQuat = SIMD4<Float>(0,0,0,1)
+        let r: Float = 0.47  // Ball radius
+        let d: Float = 2.0 * r  // Ball diameter = 0.94
+        let sqrt3_2: Float = sqrt(3.0) / 2.0  // ≈ 0.866
+        let rowSpacing: Float = d * sqrt3_2  // Vertical spacing between rows ≈ 0.814
+        let headSpotZ: Float = tableHalfLength / 2.0  // z = 6.8 (quarter of table length from head rail)
+        let footSpotZ: Float = -tableHalfLength / 2.0  // z = -6.8 (center of the rack, same distance from center as head spot)
+        let identityQuat = SIMD4<Float>(0, 0, 0, 1)
         self.balls = [
-            BallData(position: SIMD2<Float>(0.0, 5.0), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
-            BallData(position: SIMD2<Float>(-0.5, -2.0), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
-            BallData(position: SIMD2<Float>(0.5, -2.0), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
-            BallData(position: SIMD2<Float>(-1.0, -1.5), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
-            BallData(position: SIMD2<Float>(0.0, -1.5), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
-            BallData(position: SIMD2<Float>(1.0, -1.5), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
-            BallData(position: SIMD2<Float>(-1.5, -1.0), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
-            BallData(position: SIMD2<Float>(-0.5, -1.0), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
-            BallData(position: SIMD2<Float>(0.5, -1.0), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
-            BallData(position: SIMD2<Float>(1.5, -1.0), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
-            BallData(position: SIMD2<Float>(-2.0, -0.5), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
-            BallData(position: SIMD2<Float>(-1.0, -0.5), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
-            BallData(position: SIMD2<Float>(0.0, -0.5), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
-            BallData(position: SIMD2<Float>(1.0, -0.5), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
-            BallData(position: SIMD2<Float>(2.0, -0.5), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
-            BallData(position: SIMD2<Float>(0.0, 0.0), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat)
+            // Cue ball (index 0) at head spot
+            BallData(position: SIMD2<Float>(0.0, headSpotZ), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
+            // Row 1 (1 ball, 2 rows above 8-ball, index 1)
+            BallData(position: SIMD2<Float>(0.0, footSpotZ + 2.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
+            // Row 2 (2 balls, 1 row above 8-ball, indices 2–3)
+            BallData(position: SIMD2<Float>(-d / 2.0, footSpotZ + rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
+            BallData(position: SIMD2<Float>(d / 2.0, footSpotZ + rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
+            // Row 3 (3 balls, same z as 8-ball, indices 4–6, 8-ball at index 8)
+            BallData(position: SIMD2<Float>(-d, footSpotZ), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // Index 4
+            BallData(position: SIMD2<Float>(-1.5 * d, footSpotZ - rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // Index 5, moved to row 4
+            BallData(position: SIMD2<Float>(d, footSpotZ), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // Index 6
+            // Row 4 (4 balls, 1 row below 8-ball, indices 7–10)
+            BallData(position: SIMD2<Float>(-0.5 * d, footSpotZ - rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // Index 7
+            // 8-ball (index 8) at the center of the rack (center of row 3)
+            BallData(position: SIMD2<Float>(0.0, footSpotZ), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
+            BallData(position: SIMD2<Float>(0.5 * d, footSpotZ - rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // Index 9
+            BallData(position: SIMD2<Float>(1.5 * d, footSpotZ - rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // Index 10
+            // Row 5 (5 balls, 2 rows below 8-ball, indices 11–15)
+            BallData(position: SIMD2<Float>(-2.0 * d, footSpotZ - 2.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
+            BallData(position: SIMD2<Float>(-1.0 * d, footSpotZ - 2.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
+            BallData(position: SIMD2<Float>(0.0, footSpotZ - 2.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
+            BallData(position: SIMD2<Float>(1.0 * d, footSpotZ - 2.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
+            BallData(position: SIMD2<Float>(2.0 * d, footSpotZ - 2.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat)
         ]
 
         var ballShaderData = [BallShaderData](
