@@ -21,21 +21,35 @@ constant float SUBRAIL_H      = 0.705; // 1.688 inches (Absolute height, not cur
 constant float SUBRAIL_ANGLE  = 23.5 * (PI / 180.0); // In radians
 constant float RAIL_BACK_DEPTH = 0.6; // Estimated depth of cushion back
 
-// Table dimensions
+// Table dimensions (outer edges)
 constant float TABLE_HALF_WIDTH  = 7.6;
 constant float TABLE_HALF_LENGTH = 13.6;
 
-// Pocket Radii (scaled from WPA specs)
-constant float CORNER_POCKET_R = 0.96;
-constant float SIDE_POCKET_R   = 1.06;
+// Playing surface dimensions (inside the cushions)
+constant float CUSHION_THICKNESS = 0.8356; // 2 inches
+constant float PLAYING_HALF_WIDTH  = TABLE_HALF_WIDTH - CUSHION_THICKNESS;  // 6.7644
+constant float PLAYING_HALF_LENGTH = TABLE_HALF_LENGTH - CUSHION_THICKNESS; // 12.7644
 
-// Pocket Center Locations
+// Pocket Radii (Adjusted for realism)
+constant float CORNER_POCKET_R = 0.9;  // ~4.3 inches diameter
+constant float SIDE_POCKET_R   = 1.0;  // ~4.8 inches diameter
+
+// Rail positions (adjusted to align cushion face with playing surface edges)
+constant float RAIL_LENGTH_X = PLAYING_HALF_WIDTH; // Cushion face at PLAYING_HALF_WIDTH
+constant float SIDE_RAIL_NEAR_Z_END = SIDE_POCKET_R;
+constant float SIDE_RAIL_FAR_Z_END  = PLAYING_HALF_LENGTH; // Cushion face at PLAYING_HALF_LENGTH
+
+// Pocket Center Locations (adjusted to be at the outer edges of the rails)
 constant float2 CORNER_POCKET_CENTERS[4] = {
-    float2(-TABLE_HALF_WIDTH,  TABLE_HALF_LENGTH), float2( TABLE_HALF_WIDTH,  TABLE_HALF_LENGTH),
-    float2(-TABLE_HALF_WIDTH, -TABLE_HALF_LENGTH), float2( TABLE_HALF_WIDTH, -TABLE_HALF_LENGTH)
+    float2(-PLAYING_HALF_WIDTH - RAIL_BACK_DEPTH,  PLAYING_HALF_LENGTH + RAIL_BACK_DEPTH), 
+    float2( PLAYING_HALF_WIDTH + RAIL_BACK_DEPTH,  PLAYING_HALF_LENGTH + RAIL_BACK_DEPTH),
+    float2(-PLAYING_HALF_WIDTH - RAIL_BACK_DEPTH, -PLAYING_HALF_LENGTH - RAIL_BACK_DEPTH), 
+    float2( PLAYING_HALF_WIDTH + RAIL_BACK_DEPTH, -PLAYING_HALF_LENGTH - RAIL_BACK_DEPTH)
 };
+
 constant float2 SIDE_POCKET_CENTERS[2] = {
-    float2(-TABLE_HALF_WIDTH, 0.0), float2( TABLE_HALF_WIDTH, 0.0)
+    float2(-PLAYING_HALF_WIDTH - RAIL_BACK_DEPTH, 0.0), 
+    float2( PLAYING_HALF_WIDTH + RAIL_BACK_DEPTH, 0.0)
 };
 
 // -------------------------------------
@@ -236,16 +250,34 @@ float map(float3 p, thread float& hitType, thread float& pocketDist) {
         return boundsDist;
     }
 
-    // Felt SDF (Adjusted to y = -0.6)
-    float dFelt = prBoxDf(p - float3(0.0, -0.6, 0.0), float3(TABLE_HALF_WIDTH, 0.01, TABLE_HALF_LENGTH));
+    // Felt SDF (Using smaller playing surface dimensions)
+    float dFelt = prBoxDf(p - float3(0.0, -0.6, 0.0), float3(PLAYING_HALF_WIDTH, 0.01, PLAYING_HALF_LENGTH));
 
-    // Rail Segment SDFs (Adjust Y positions to account for felt at y = -0.6)
-    float dHeadRail = sdRailSegmentCorrected(p - float3(0.0, -0.6, 0.0), -TABLE_HALF_WIDTH + CORNER_POCKET_R, TABLE_HALF_WIDTH - CORNER_POCKET_R, -TABLE_HALF_LENGTH, 0);
-    float dFootRail = sdRailSegmentCorrected(p - float3(0.0, -0.6, 0.0), -TABLE_HALF_WIDTH + CORNER_POCKET_R, TABLE_HALF_WIDTH - CORNER_POCKET_R, TABLE_HALF_LENGTH, 0);
-    float dLeftRailFar = sdRailSegmentCorrected(p - float3(0.0, -0.6, 0.0), SIDE_POCKET_R, TABLE_HALF_LENGTH - CORNER_POCKET_R, -TABLE_HALF_WIDTH, 1);
-    float dLeftRailNear = sdRailSegmentCorrected(p - float3(0.0, -0.6, 0.0), -TABLE_HALF_LENGTH + CORNER_POCKET_R, -SIDE_POCKET_R, -TABLE_HALF_WIDTH, 1);
-    float dRightRailFar = sdRailSegmentCorrected(p - float3(0.0, -0.6, 0.0), SIDE_POCKET_R, TABLE_HALF_LENGTH - CORNER_POCKET_R, TABLE_HALF_WIDTH, 1);
-    float dRightRailNear = sdRailSegmentCorrected(p - float3(0.0, -0.6, 0.0), -TABLE_HALF_LENGTH + CORNER_POCKET_R, -SIDE_POCKET_R, TABLE_HALF_WIDTH, 1);
+    // Rail Segment SDFs (Adjusted positions to align with playing surface)
+    float dHeadRail = sdRailSegmentCorrected(
+        p - float3(0.0, -0.6, 0.0),
+        -RAIL_LENGTH_X, RAIL_LENGTH_X, -PLAYING_HALF_LENGTH, 0
+    );
+    float dFootRail = sdRailSegmentCorrected(
+        p - float3(0.0, -0.6, 0.0),
+        -RAIL_LENGTH_X, RAIL_LENGTH_X, PLAYING_HALF_LENGTH, 0
+    );
+    float dLeftRailFar = sdRailSegmentCorrected(
+        p - float3(0.0, -0.6, 0.0),
+        SIDE_RAIL_NEAR_Z_END, SIDE_RAIL_FAR_Z_END, -PLAYING_HALF_WIDTH, 1
+    );
+    float dLeftRailNear = sdRailSegmentCorrected(
+        p - float3(0.0, -0.6, 0.0),
+        -SIDE_RAIL_FAR_Z_END, -SIDE_RAIL_NEAR_Z_END, -PLAYING_HALF_WIDTH, 1
+    );
+    float dRightRailFar = sdRailSegmentCorrected(
+        p - float3(0.0, -0.6, 0.0),
+        SIDE_RAIL_NEAR_Z_END, SIDE_RAIL_FAR_Z_END, PLAYING_HALF_WIDTH, 1
+    );
+    float dRightRailNear = sdRailSegmentCorrected(
+        p - float3(0.0, -0.6, 0.0),
+        -SIDE_RAIL_FAR_Z_END, -SIDE_RAIL_NEAR_Z_END, PLAYING_HALF_WIDTH, 1
+    );
 
     float dRails = min(dHeadRail, dFootRail);
     dRails = min(dRails, min(dLeftRailFar, dLeftRailNear));
@@ -269,8 +301,6 @@ float map(float3 p, thread float& hitType, thread float& pocketDist) {
     } else { // dSolid == dRails
         hitType = 2.0; // Rail
     }
-    // NOTE: We no longer use `max(dRails, -dPockets)` here.
-    // The check for whether the hit point is *in* a pocket happens later in showScene.
 
     // Return distance to the nearest solid surface.
     return dSolid;
@@ -291,7 +321,7 @@ float3 getNormal(float3 p, thread float& hitType, thread float& pocketDist) {
 }
 
 // -------------------------------------
-//   5) showScene (With Restored Cue Stick)
+//   5) showScene (With Restored Cue Stick and Adjusted Pocket Detection)
 // -------------------------------------
 float3 showScene(float3 ro, float3 rd,
                  float time,
@@ -378,7 +408,7 @@ float3 showScene(float3 ro, float3 rd,
                  pocketDistAtHit = finalPocketDist; // Store this final pocket distance
 
                  // Check if the hit point is *inside* a pocket cylinder
-                 if (finalPocketDist < -0.01) { // Use a small negative threshold to be safely inside
+                 if (finalPocketDist < -0.05) { // Stricter threshold to reduce visible pocket size
                      hitType = 3.0; // Yes -> It's a Pocket Hole
                  } else {
                      hitType = mapHitType; // No -> It's the solid surface map detected (Felt=1 or Rail=2)
@@ -662,9 +692,10 @@ final class BilliardSimulation: ObservableObject {
     private let ballRadius: Float = 0.47
     private let tableWidth: Float = 7.6
     private let tableLength: Float = 13.6
+    private let cushionThickness: Float = 0.8356
     private let pocketRadius: Float = 0.53  // Not used for pockets anymore—kept for legacy
-    private let cushionEdgeX: Float = 7.6
-    private let cushionEdgeZ: Float = 13.6
+    private let cushionEdgeX: Float = 6.7644
+    private let cushionEdgeZ: Float = 12.7644
     private let cuePullSpeed: Float = 1.0
     private let cueStrikeSpeed: Float = 5.0
     private let maxCueOffset: Float = 2.0
@@ -807,19 +838,22 @@ final class BilliardSimulation: ObservableObject {
     }
 
     private func checkPocket(pos: SIMD2<Float>, height: Float) -> Bool {
-        // This method is replaced by real pockets in the SDF, but we keep it for demonstration.
-        let pocketPositions: [SIMD2<Float>] = [
-            SIMD2<Float>(-8,14),  SIMD2<Float>( 8,14),
-            SIMD2<Float>(-8, 0),  SIMD2<Float>( 8, 0),
-            SIMD2<Float>(-8,-14), SIMD2<Float>( 8,-14)
-        ]
-        for p in pocketPositions {
-            if simd_length(pos - p) < pocketRadius && height <= 0.01 + ballRadius {
-                return true
+            // Updated pocket positions to match the shader's CORNER_POCKET_CENTERS and SIDE_POCKET_CENTERS
+            let pocketPositions: [SIMD2<Float>] = [
+                SIMD2<Float>(-tableWidth + cushionThickness,  tableLength - cushionThickness),  // Top-left corner
+                SIMD2<Float>( tableWidth - cushionThickness,  tableLength - cushionThickness),  // Top-right corner
+                SIMD2<Float>(-tableWidth + cushionThickness,  0.0),                           // Left side
+                SIMD2<Float>( tableWidth - cushionThickness,  0.0),                           // Right side
+                SIMD2<Float>(-tableWidth + cushionThickness, -tableLength + cushionThickness), // Bottom-left corner
+                SIMD2<Float>( tableWidth - cushionThickness, -tableLength + cushionThickness)  // Bottom-right corner
+            ]
+            for p in pocketPositions {
+                if simd_length(pos - p) < pocketRadius && height <= 0.01 + ballRadius {
+                    return true
+                }
             }
+            return false
         }
-        return false
-    }
 
     func updatePhysics(deltaTime: Float) {
         if isTouching && !shooting {
