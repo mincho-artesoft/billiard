@@ -8,55 +8,38 @@ let metalShader = """
 using namespace metal;
 
 // -------------------------------------
-//      1) Plane + Polyhedron SDF
+//      0) Global Constants
 // -------------------------------------
-struct Plane {
-    float3 normal;
-    float  offset;
+constant float PI = 3.1415926535;
+constant float BALL_RADIUS = 0.47;
+constant float BALL_DIAMETER = 2.0 * BALL_RADIUS; // = 0.94
+constant float CUE_LENGTH = 2.5; // Standard cue length in shader units
+
+// Define K55 dimensions in shader units (1 inch = 0.4178 units approx)
+constant float NOSE_HEIGHT    = 0.609; // 1.458 inches
+constant float SUBRAIL_H      = 0.705; // 1.688 inches (Absolute height, not currently used explicitly)
+constant float SUBRAIL_ANGLE  = 23.5 * (PI / 180.0); // In radians
+constant float RAIL_BACK_DEPTH = 0.6; // Estimated depth of cushion back
+
+// Table dimensions
+constant float TABLE_HALF_WIDTH  = 7.6;
+constant float TABLE_HALF_LENGTH = 13.6;
+
+// Pocket Radii (scaled from WPA specs)
+constant float CORNER_POCKET_R = 0.96;
+constant float SIDE_POCKET_R   = 1.06;
+
+// Pocket Center Locations
+constant float2 CORNER_POCKET_CENTERS[4] = {
+    float2(-TABLE_HALF_WIDTH,  TABLE_HALF_LENGTH), float2( TABLE_HALF_WIDTH,  TABLE_HALF_LENGTH),
+    float2(-TABLE_HALF_WIDTH, -TABLE_HALF_LENGTH), float2( TABLE_HALF_WIDTH, -TABLE_HALF_LENGTH)
+};
+constant float2 SIDE_POCKET_CENTERS[2] = {
+    float2(-TABLE_HALF_WIDTH, 0.0), float2( TABLE_HALF_WIDTH, 0.0)
 };
 
-float planeDistance(float3 p, Plane plane) {
-    return dot(plane.normal, p) + plane.offset;
-}
-
-Plane buildPlaneFromTriangle(float3 v0, float3 v1, float3 v2, int outwardSign) {
-    float3 e1 = v1 - v0;
-    float3 e2 = v2 - v0;
-    float3 n = normalize(cross(e1, e2));
-    if (outwardSign < 0) {
-        n = -n;
-    }
-    Plane plane;
-    plane.normal = n;
-    plane.offset = -dot(n, v0);
-    return plane;
-}
-
-float prConvexPolyhedronFrom8Corners(float3 p, constant float3* corners) {
-    Plane planes[6];
-    // Bottom face (0,1,2,3)
-    planes[0] = buildPlaneFromTriangle(corners[0], corners[1], corners[2], -1);
-    // Top face (4,5,6,7)
-    planes[1] = buildPlaneFromTriangle(corners[4], corners[5], corners[6], 1);
-    // Side A (0,1,5,4)
-    planes[2] = buildPlaneFromTriangle(corners[0], corners[1], corners[5], 1);
-    // Side B (1,2,6,5)
-    planes[3] = buildPlaneFromTriangle(corners[1], corners[2], corners[6], 1);
-    // Side C (2,3,7,6)
-    planes[4] = buildPlaneFromTriangle(corners[2], corners[3], corners[7], 1);
-    // Side D (3,0,4,7)
-    planes[5] = buildPlaneFromTriangle(corners[3], corners[0], corners[4], 1);
-
-    float d = -1e6;
-    for (int i = 0; i < 6; i++) {
-        float pd = planeDistance(p, planes[i]);
-        d = max(d, pd);
-    }
-    return d;
-}
-
 // -------------------------------------
-//   2) Original Noise / Utility SDF
+//      1) Utility + Basic SDFs
 // -------------------------------------
 float hash(float2 p) {
     return fract(sin(dot(p, float2(127.1, 311.7))) * 43758.5453);
@@ -90,11 +73,19 @@ float3 hsvToRgb(float3 c) {
     return c.z * mix(float3(1.0), clamp(p - 1.0, 0.0, 1.0), c.y);
 }
 
+// Box SDF - centered at origin
 float prBoxDf(float3 p, float3 b) {
-    float3 d = abs(p) - b;
-    return min(max(d.x, max(d.y, d.z)), 0.0) + length(max(d, 0.0));
+    float3 q = abs(p) - b;
+    return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0);
 }
 
+// Cylinder SDF - centered at origin, aligned with Y axis
+float sdCylinder(float3 p, float r, float h) {
+    float2 d = abs(float2(length(p.xz),p.y)) - float2(r,h);
+    return min(max(d.x,d.y),0.0) + length(max(d,0.0));
+}
+
+// Restored original rounded cylinder SDF for the cue stick
 float prRoundCylDf(float3 p, float r, float rt, float h) {
     float dxy = length(p.xy) - (r - (rt / 2.5) * p.z);
     float dz = abs(p.z) - h;
@@ -125,7 +116,7 @@ float3x3 qtToRMat(float4 q) {
 }
 
 // -------------------------------------
-//   3) Ball Intersection
+//   2) Ball Intersection (Corrected Height)
 // -------------------------------------
 struct VertexOut {
     float4 position [[position]];
@@ -136,21 +127,26 @@ struct Ball {
     float2 position;
     float2 velocity;
     float4 quaternion;
-    float height;
+    float height; // Height of the *bottom* of the ball from physics
 };
 
 void ballHit(float3 ro, float3 rd, thread float &dist, thread float3 &normal,
              thread int &id, constant Ball* balls [[buffer(2)]]) {
     const int nBall = 16;
-    const float rad = 0.47;
     dist = 50.0;
     normal = float3(0.0);
     id = -1;
     for (int n = 0; n < nBall; n++) {
-        float3 ballPos = float3(balls[n].position.x, balls[n].height, balls[n].position.y);
+        // Corrected ball center Y coordinate
+        float ballCenterY = balls[n].height + BALL_RADIUS - 0.6; // Adjust for felt height
+        float3 ballPos = float3(balls[n].position.x, ballCenterY, balls[n].position.y);
+
+        // Check for pocketed balls (marked with infinite velocity in Swift)
+        if (isinf(balls[n].velocity.x)) continue;
+
         float3 u = ro - ballPos;
         float b = dot(rd, u);
-        float w = b*b - dot(u, u) + rad*rad;
+        float w = b*b - dot(u, u) + BALL_RADIUS*BALL_RADIUS;
         if (w > 0.0) {
             float d = -b - sqrt(w);
             if (d > 0.0 && d < dist) {
@@ -163,52 +159,138 @@ void ballHit(float3 ro, float3 rd, thread float &dist, thread float3 &normal,
 }
 
 // -------------------------------------
-//   4) 8-corner definitions w/ rails lifted
+//   3) K55 Rail Profile & Pocket SDFs
 // -------------------------------------
-constant float3 HEAD_RAIL_CORNERS[8] = {
-    float3(-8.0, -0.58, -14.4), float3( 8.0, -0.58, -14.4),
-    float3( 8.0,  0.4,  -14.4), float3(-8.0,  0.4,  -14.4),
-    float3(-8.0, -0.58, -13.6), float3( 8.0, -0.58, -13.6),
-    float3( 8.0,  0.4,  -13.6), float3(-8.0,  0.4,  -13.6)
-};
+float sdK55Profile(float2 p) {
+    // Plane 1: Cushion Face
+    float2 n_cushion = normalize(float2(0.4508, -0.133));
+    n_cushion.x = -n_cushion.x;
+    float dist_cushion = dot(n_cushion, p - float2(0.0, NOSE_HEIGHT));
 
-constant float3 FOOT_RAIL_CORNERS[8] = {
-    float3(-8.0, -0.58, 13.6),  float3( 8.0, -0.58, 13.6),
-    float3( 8.0,  0.4,  13.6),  float3(-8.0,  0.4,  13.6),
-    float3(-8.0, -0.58, 14.4),  float3( 8.0, -0.58, 14.4),
-    float3( 8.0,  0.4,  14.4),  float3(-8.0,  0.4,  14.4)
-};
+    // Plane 2: Top Face
+    float top_y = NOSE_HEIGHT + 0.05;
+    float2 n_top = float2(0.0, 1.0);
+    float dist_top = dot(n_top, p - float2(0.0, top_y));
 
-constant float3 LEFT_HEAD_MID_CORNERS[8] = {
-    float3(-8.4, -0.58, -14.0), float3(-7.6, -0.58, -14.0),
-    float3(-7.6,  0.4,  -14.0), float3(-8.4,  0.4,  -14.0),
-    float3(-8.4, -0.58,  0.0),  float3(-7.6, -0.58,  0.0),
-    float3(-7.6,  0.4,   0.0),  float3(-8.4,  0.4,   0.0)
-};
+    // Plane 3: Subrail Face
+    float2 n_subrail = float2(-sin(SUBRAIL_ANGLE), cos(SUBRAIL_ANGLE));
+    float2 subrail_anchor = float2(0.1, NOSE_HEIGHT - 0.15);
+    float dist_subrail = dot(n_subrail, p - subrail_anchor);
 
-constant float3 LEFT_MID_FOOT_CORNERS[8] = {
-    float3(-8.4, -0.58, 0.0),   float3(-7.6, -0.58, 0.0),
-    float3(-7.6,  0.4,  0.0),   float3(-8.4,  0.4,  0.0),
-    float3(-8.4, -0.58, 14.0),  float3(-7.6, -0.58, 14.0),
-    float3(-7.6,  0.4,  14.0),  float3(-8.4,  0.4,  14.0)
-};
+    // Plane 4: Back Face
+    float2 n_back = float2(1.0, 0.0);
+    float dist_back = dot(n_back, p - float2(RAIL_BACK_DEPTH, 0.0));
 
-constant float3 RIGHT_HEAD_MID_CORNERS[8] = {
-    float3(7.6, -0.58, -14.0),  float3(8.4, -0.58, -14.0),
-    float3(8.4,  0.4,  -14.0),  float3(7.6,  0.4,  -14.0),
-    float3(7.6, -0.58,  0.0),   float3(8.4, -0.58,  0.0),
-    float3(8.4,  0.4,   0.0),   float3(7.6,  0.4,   0.0)
-};
+    // Plane 5: Bottom Face (Table bed)
+    float2 n_bottom = float2(0.0, -1.0);
+    float dist_bottom = dot(n_bottom, p - float2(0.0, 0.0));
 
-constant float3 RIGHT_MID_FOOT_CORNERS[8] = {
-    float3(7.6, -0.58, 0.0),    float3(8.4, -0.58, 0.0),
-    float3(8.4,  0.4,  0.0),    float3(7.6,  0.4,  0.0),
-    float3(7.6, -0.58, 14.0),   float3(8.4, -0.58, 14.0),
-    float3(8.4,  0.4,  14.0),   float3(7.6,  0.4,  14.0)
-};
+    float dist = max(dist_cushion, dist_top);
+    dist = max(dist, dist_back);
+    dist = max(dist, dist_bottom);
+    dist = max(dist, dist_subrail);
+
+    return dist;
+}
+
+float sdRailSegmentCorrected(float3 p, float rail_start, float rail_end, float rail_axis_pos, int axis) {
+    float rail_coord, depth_coord_signed, height_coord;
+    float half_length = abs(rail_end - rail_start) / 2.0;
+    float mid_point = (rail_start + rail_end) / 2.0;
+
+    height_coord = p.y;
+
+    if (axis == 0) {
+        rail_coord = p.x;
+        depth_coord_signed = (p.z - rail_axis_pos) * sign(rail_axis_pos);
+        float length_dist = abs(rail_coord - mid_point) - half_length;
+        float profile_dist = sdK55Profile(float2(depth_coord_signed, height_coord));
+        return max(profile_dist, length_dist);
+    } else {
+        rail_coord = p.z;
+        depth_coord_signed = (p.x - rail_axis_pos) * sign(rail_axis_pos);
+        float length_dist = abs(rail_coord - mid_point) - half_length;
+        float profile_dist = sdK55Profile(float2(depth_coord_signed, height_coord));
+        return max(profile_dist, length_dist);
+    }
+}
+
+float sdPocket(float3 p, float2 center, float radius) {
+    float d = length(p.xz - center) - radius;
+    return d;
+}
 
 // -------------------------------------
-//   5) showScene with new rail SDF
+//   4) Scene Mapping & Normals
+// -------------------------------------
+float map(float3 p, thread float& hitType, thread float& pocketDist) {
+    hitType = 0.0; // 0=miss, 1=felt, 2=rail, 3=pocket_hole
+    pocketDist = 1000.0;
+
+    // Bounding Sphere
+    float sceneRadius = max(TABLE_HALF_WIDTH, TABLE_HALF_LENGTH) + 2.0;
+    float boundsDist = length(p.xz) - sceneRadius;
+    boundsDist = max(boundsDist, abs(p.y) - 5.0);
+    if (boundsDist > 1.0) {
+        hitType = 0.0;
+        return boundsDist;
+    }
+
+    // Felt SDF (Adjusted to y = -0.6)
+    float dFelt = prBoxDf(p - float3(0.0, -0.6, 0.0), float3(TABLE_HALF_WIDTH, 0.01, TABLE_HALF_LENGTH));
+
+    // Rail Segment SDFs (Adjust Y positions to account for felt at y = -0.6)
+    float dHeadRail = sdRailSegmentCorrected(p - float3(0.0, -0.6, 0.0), -TABLE_HALF_WIDTH + CORNER_POCKET_R, TABLE_HALF_WIDTH - CORNER_POCKET_R, -TABLE_HALF_LENGTH, 0);
+    float dFootRail = sdRailSegmentCorrected(p - float3(0.0, -0.6, 0.0), -TABLE_HALF_WIDTH + CORNER_POCKET_R, TABLE_HALF_WIDTH - CORNER_POCKET_R, TABLE_HALF_LENGTH, 0);
+    float dLeftRailFar = sdRailSegmentCorrected(p - float3(0.0, -0.6, 0.0), SIDE_POCKET_R, TABLE_HALF_LENGTH - CORNER_POCKET_R, -TABLE_HALF_WIDTH, 1);
+    float dLeftRailNear = sdRailSegmentCorrected(p - float3(0.0, -0.6, 0.0), -TABLE_HALF_LENGTH + CORNER_POCKET_R, -SIDE_POCKET_R, -TABLE_HALF_WIDTH, 1);
+    float dRightRailFar = sdRailSegmentCorrected(p - float3(0.0, -0.6, 0.0), SIDE_POCKET_R, TABLE_HALF_LENGTH - CORNER_POCKET_R, TABLE_HALF_WIDTH, 1);
+    float dRightRailNear = sdRailSegmentCorrected(p - float3(0.0, -0.6, 0.0), -TABLE_HALF_LENGTH + CORNER_POCKET_R, -SIDE_POCKET_R, TABLE_HALF_WIDTH, 1);
+
+    float dRails = min(dHeadRail, dFootRail);
+    dRails = min(dRails, min(dLeftRailFar, dLeftRailNear));
+    dRails = min(dRails, min(dRightRailFar, dRightRailNear));
+
+    // Pocket SDFs (Adjust Y positions to account for felt at y = -0.6)
+    float dPocketCorners = 1000.0;
+    for (int i = 0; i < 4; ++i) dPocketCorners = min(dPocketCorners, sdPocket(p - float3(0.0, -0.6, 0.0), CORNER_POCKET_CENTERS[i], CORNER_POCKET_R));
+    float dPocketSides = 1000.0;
+    for (int i = 0; i < 2; ++i) dPocketSides = min(dPocketSides, sdPocket(p - float3(0.0, -0.6, 0.0), SIDE_POCKET_CENTERS[i], SIDE_POCKET_R));
+    float dPockets = min(dPocketCorners, dPocketSides);
+    pocketDist = dPockets;
+
+    // Combine Rails and Pockets
+    float dEnvironment = max(dRails, -dPockets);
+
+    // Final Combination
+    float d = dFelt;
+    float finalHitType = 1.0;
+    if (dEnvironment < d) {
+        d = dEnvironment;
+        if (pocketDist < -0.01) finalHitType = 3.0;
+        else finalHitType = 2.0;
+    }
+    hitType = finalHitType;
+
+    return d;
+}
+
+float3 getNormal(float3 p, thread float& hitType, thread float& pocketDist) {
+    float2 e = float2(0.0005, 0.0);
+    auto map_internal = [&](float3 pt) {
+        float ht_ignore, pd_ignore;
+        return map(pt, ht_ignore, pd_ignore);
+    };
+    map(p, hitType, pocketDist);
+    return normalize(float3(
+        map_internal(p + e.xyy) - map_internal(p - e.xyy),
+        map_internal(p + e.yxy) - map_internal(p - e.yxy),
+        map_internal(p + e.yyx) - map_internal(p - e.yyx)
+    ));
+}
+
+// -------------------------------------
+//   5) showScene (Restored Original Cue Positioning and Appearance)
 // -------------------------------------
 float3 showScene(float3 ro, float3 rd,
                  float time,
@@ -219,19 +301,7 @@ float3 showScene(float3 ro, float3 rd,
                  float cueAngle,
                  float2 cue3DRotate)
 {
-    const float hbLen = 8.0;
-    const float hbLenZ = hbLen * 1.75;
-    const float2 hIn = float2(hbLen, hbLenZ);
-    const float PI = 3.14159;
-
-    // We'll define corner & side pockets separately, each with its own radius:
-    // Suppose 1 code unit ~ 2.875 inches.
-    // For a ~4.625\" corner mouth => 4.625 / 2.875 ~ 1.61 => radius ~0.805
-    // For a ~5.125\" side mouth => 5.125 / 2.875 ~ 1.78 => radius ~0.89
-    const float cornerPocketRadius = 0.805;
-    const float sidePocketRadius   = 0.89;
-
-    float3 col = float3(0.05, 0.05, 0.1);
+    float3 col = float3(0.05, 0.05, 0.1); // Default Background
     float t = 0.0;
     const float maxDist = 50.0;
 
@@ -240,240 +310,141 @@ float3 showScene(float3 ro, float3 rd,
     int ballId;
     ballHit(ro, rd, dstBall, ballNormal, ballId, balls);
 
-    float dstFelt = maxDist;
-    float dstRails = maxDist;
-    float dstCue = maxDist;
-    float3 cueHitPos;
-    float hitSurface = 0.0;
+    float hitDist = maxDist;
+    float hitType = 0.0; // 0=miss, 1=felt, 2=rail, 3=pocket_hole, 4=ball, 5=cue
+    float pocketDist = 1000.0;
+    float3 cueHitPos; // Local coords for cue shading
 
     for (int i = 0; i < 80; i++) {
         float3 p = ro + rd * t;
 
-        // 1) Distance to felt:
-        float dFelt = prBoxDf(p - float3(0.0, -0.6, 0.0), float3(hIn.x, 0.01, hIn.y));
-
-        // 2) Distance to rails:
-        float dHeadRail = prConvexPolyhedronFrom8Corners(p, HEAD_RAIL_CORNERS);
-        float dFootRail = prConvexPolyhedronFrom8Corners(p, FOOT_RAIL_CORNERS);
-        float dLeftHeadToMid = prConvexPolyhedronFrom8Corners(p, LEFT_HEAD_MID_CORNERS);
-        float dLeftMidToFoot = prConvexPolyhedronFrom8Corners(p, LEFT_MID_FOOT_CORNERS);
-        float dRightHeadToMid = prConvexPolyhedronFrom8Corners(p, RIGHT_HEAD_MID_CORNERS);
-        float dRightMidToFoot = prConvexPolyhedronFrom8Corners(p, RIGHT_MID_FOOT_CORNERS);
-
-        float dRails = min(dHeadRail,
-                       min(dFootRail,
-                       min(dLeftHeadToMid,
-                       min(dLeftMidToFoot,
-                       min(dRightHeadToMid, dRightMidToFoot)))));
-
-        // 3) Distance to pockets:
-        float2 cornerPocketPositions[4] = {
-            float2(-8, 14),  float2( 8, 14),
-            float2(-8, -14), float2( 8, -14)
-        };
-        float2 sidePocketPositions[2] = {
-            float2(-8, 0),   float2( 8, 0)
-        };
-
-        float minPocketDistCorner = maxDist;
-        for (int j = 0; j < 4; j++) {
-            float distToCornerPocket = length(p.xz - cornerPocketPositions[j]) - cornerPocketRadius;
-            minPocketDistCorner = min(minPocketDistCorner, distToCornerPocket);
+        // --- Distance to Cue Stick (Restored Original Logic with Adjusted Height) ---
+        float dCueStick = maxDist;
+        if (cueVisible != 0 && !isinf(balls[0].velocity.x)) {
+            float3 pc = p - float3(balls[0].position.x, balls[0].height + BALL_RADIUS - 0.6, balls[0].position.y);
+            // Position the cue stick just above the cue ball
+            float baseAngle = sin(time * 0.5) * 0.1;
+            pc = rotateX(pc, cue3DRotate.y);
+            float finalYaw = baseAngle + cue3DRotate.x;
+            pc = rotateY(pc, finalYaw);
+            float tipOffset = CUE_LENGTH;
+            float maxCueOffset = -BALL_RADIUS;
+            pc.z += (maxCueOffset - cueOffset - tipOffset);
+            pc = rotateY(pc, PI); // 180-degree rotation to align correctly
+            pc.x -= cueTipOffset.x;
+            pc.y -= cueTipOffset.y;
+            dCueStick = prRoundCylDf(pc, 0.1 - (0.015 / 2.5) * (pc.z + tipOffset), 0.05, CUE_LENGTH);
+            cueHitPos = pc;
         }
 
-        float minPocketDistSide = maxDist;
-        for (int j = 0; j < 2; j++) {
-            float distToSidePocket = length(p.xz - sidePocketPositions[j]) - sidePocketRadius;
-            minPocketDistSide = min(minPocketDistSide, distToSidePocket);
-        }
-        float minPocketDist = min(minPocketDistCorner, minPocketDistSide);
+        // --- Distance to Felt/Rails/Pockets ---
+        float currentHitType = 0.0;
+        float currentPocketDist = 1000.0;
+        float dEnv = map(p, currentHitType, currentPocketDist);
 
-        // Force the felt/rails SDF to open up where pockets exist:
-        dFelt = max(dFelt, -minPocketDist);
-        dRails = max(dRails, -minPocketDist);
+        // Find minimum distance
+        float d = min(dEnv, dCueStick);
 
-        // 4) Distance to cue stick:
-        float3 pc = p - float3(balls[0].position.x, balls[0].height, balls[0].position.y);
-        pc.y -= 0.01;
-        float baseAngle = sin(time * 0.5) * 0.1;
-        pc = rotateX(pc, cue3DRotate.y);
-        float finalYaw = baseAngle + cue3DRotate.x;
-        pc = rotateY(pc, finalYaw);
-        float cueLength = 2.5;
-        float ballRadius = 0.47;
-        float tipOffset = cueLength;
-        float maxCueOffset = -ballRadius;
-        pc.z += (maxCueOffset - cueOffset - tipOffset);
-        pc = rotateY(pc, 3.14159);
-        pc.x -= cueTipOffset.x;
-        pc.y -= cueTipOffset.y;
-        float dCueStick = prRoundCylDf(pc, 0.1 - (0.015 / 2.5) * (pc.z + tipOffset), 0.05, cueLength);
-        if (cueVisible == 0) {
-            dCueStick = 99999.0;
-        }
-
-        float d = min(min(dFelt, dRails), dCueStick);
+        // --- Hit Detection ---
         if (d < 0.0005 || t > dstBall) {
-            // If we already had a ball intersection closer, break:
-            if (dstBall < dFelt && dstBall < dRails && dstBall < dCueStick) {
-                break;
-            } else if (dFelt < dRails && dFelt < dCueStick) {
-                dstFelt = t;
-                hitSurface = 1.0;
-            } else if (dRails < dFelt && dRails < dCueStick) {
-                dstRails = t;
-                hitSurface = 2.0;
+            if (dstBall <= t + 0.001 && dstBall < maxDist) {
+                 hitDist = dstBall;
+                 hitType = 4.0;
+            } else if (dEnv <= dCueStick) {
+                 hitDist = t;
+                 hitType = currentHitType;
+                 pocketDist = currentPocketDist;
+            } else if (dCueStick < maxDist) {
+                 hitDist = t;
+                 hitType = 5.0;
             } else {
-                dstCue = t;
-                cueHitPos = pc;
-                hitSurface = 3.0;
+                 hitDist = maxDist;
+                 hitType = 0.0;
             }
+             break;
+        }
+
+        // Step forward
+        t += max(d * 0.7, 0.001);
+        if (t > maxDist) {
+            hitDist = maxDist;
+            hitType = 0.0;
             break;
         }
-
-        t += d * 0.7;
-        if (t > maxDist) break;
     }
 
-    float3 lightPos = float3(0.0, 3.0 * hbLen, 0.0);
+    // --- Shading ---
+    if (hitType > 0.0) {
+        float3 p = ro + rd * hitDist;
+        float3 n;
+        float3 lightPos = float3(0.0, 20.0, 0.0);
+        float3 lightDir = normalize(lightPos - p);
+        float ambient = 0.4;
 
-    float minDist = min(min(dstBall, dstFelt), min(dstRails, dstCue));
-    if (minDist < maxDist) {
-        if (dstBall <= min(dstFelt, min(dstRails, dstCue))) {
-            float3 p = ro + rd * dstBall;
-            float3 n = ballNormal;
-            int id = ballId;
+        if (hitType == 1.0) { // Felt
+            n = getNormal(p, hitType, pocketDist);
+            float2 feltUV = p.xz * 0.5; float feltNoise = fbm(feltUV, 4); float fiberDetail = noise(feltUV*15.0);
+            float3 feltBaseColor = float3(0.1, 0.5, 0.2); float3 fiberColor = float3(0.05,0.3,0.1);
+            float fiberMix = smoothstep(0.6, 0.8, fiberDetail); float3 feltColor = mix(feltBaseColor, fiberColor, fiberMix);
+            feltColor *= (0.8 + 0.2*feltNoise);
+            float diff = max(dot(n, lightDir), 0.0); float3 r = reflect(rd, n); float spec = pow(max(dot(r, lightDir), 0.0), 8.0);
+            col = feltColor * (ambient + (1.0-ambient)*diff); col += float3(0.05)*spec*(0.5 + 0.5*feltNoise);
 
-            // Color the balls:
-            if (id == 0) {
-                col = float3(1.0);
-            } else {
-                float c = float(id - 1);
-                bool isStriped = (id >= 9);
-                float3 baseColor;
-                if (id == 8) {
-                    baseColor = float3(0.0);
-                } else {
-                    baseColor = hsvToRgb(float3(fmod(c/7.0, 1.0), 1.0, 1.0));
+        } else if (hitType == 2.0) { // Rail
+            n = getNormal(p, hitType, pocketDist);
+            col = float3(0.4, 0.25, 0.15);
+            float diff = max(dot(n, lightDir), 0.0); float3 r = reflect(rd, n); float spec = pow(max(dot(r, lightDir), 0.0), 32.0);
+            col *= (ambient + (1.0-ambient)*diff); col += float3(0.4)*spec;
+
+        } else if (hitType == 3.0) { // Pocket Hole
+            col = float3(0.01, 0.01, 0.01);
+
+        } else if (hitType == 4.0) { // Ball
+            n = ballNormal; int id = ballId;
+            if (id == 0) { col = float3(1.0); } else {
+                bool isStriped = (id >= 9); float3 baseColor;
+                if (id == 8) { baseColor = float3(0.0); } else {
+                    float hue = 0.0;
+                    if(id==1 || id==9) hue = 1.0/6.0; if(id==2 || id==10) hue = 4.0/6.0;
+                    if(id==3 || id==11) hue = 0.0/6.0; if(id==4 || id==12) hue = 5.0/6.0;
+                    if(id==5 || id==13) hue = 0.5/6.0; if(id==6 || id==14) hue = 2.0/6.0;
+                    if(id==7 || id==15) hue = 0.25/6.0;
+                    baseColor = hsvToRgb(float3(hue, 1.0, 1.0));
                 }
                 float3x3 rotMat = qtToRMat(balls[id].quaternion);
                 float3 rotatedNormal = rotMat * n;
-                float2 uv = float2(
-                    atan2(rotatedNormal.x, rotatedNormal.z)/(2.0*PI) + 0.5,
-                    acos(rotatedNormal.y)/PI
-                );
+                float2 uv = float2(atan2(rotatedNormal.x, rotatedNormal.z)/(2.0*PI) + 0.5, acos(rotatedNormal.y)/PI);
                 if (isStriped && id != 8) {
-                    float stripeFactor = sin(uv.y * PI * 10.0);
-                    col = mix(float3(1.0), baseColor, step(0.0, stripeFactor));
+                    float stripeWidth = 0.3;
+                    col = mix(float3(1.0), baseColor, step(stripeWidth, uv.y) * step(uv.y, 1.0 - stripeWidth));
                 } else {
                     col = baseColor;
                 }
-                float2 circleCenter = float2(0.5, 0.5);
-                float circleRadius = 0.2;
+                float2 circleCenter = float2(0.5, 0.5); float circleRadius = 0.2;
                 float distToCenter = length(uv - circleCenter);
-                if (distToCenter < circleRadius && id != 0) {
-                    col = float3(1.0);
-                    if (distToCenter < circleRadius*0.7) col = float3(0.0);
-                }
+                if (distToCenter < circleRadius && id != 0) { col = float3(1.0); }
             }
-            col *= 0.2 + 0.8*max(n.y, 0.0);
-            float3 r = reflect(rd, n);
-            float spec = pow(max(dot(r, normalize(lightPos - p)), 0.0), 16.0);
-            col += float3(0.2)*spec;
-        }
-        else if (hitSurface == 1.0) {
-            // Felt
-            float3 p = ro + rd*dstFelt;
-            float3 eps = float3(0.001,0.0,0.0);
-            float3 n = normalize(float3(
-                prBoxDf(p + eps.xyy - float3(0.0, -0.6, 0.0), float3(hIn.x,0.01,hIn.y))
-              - prBoxDf(p - eps.xyy - float3(0.0, -0.6, 0.0), float3(hIn.x,0.01,hIn.y)),
-                prBoxDf(p + eps.yxy - float3(0.0, -0.6, 0.0), float3(hIn.x,0.01,hIn.y))
-              - prBoxDf(p - eps.yxy - float3(0.0, -0.6, 0.0), float3(hIn.x,0.01,hIn.y)),
-                prBoxDf(p + eps.yyx - float3(0.0, -0.6, 0.0), float3(hIn.x,0.01,hIn.y))
-              - prBoxDf(p - eps.yyx - float3(0.0, -0.6, 0.0), float3(hIn.x,0.01,hIn.y))
+            float diff = max(dot(n, lightDir), 0.0); col *= (ambient + (1.0-ambient)*diff);
+            float3 r = reflect(rd, n); float spec = pow(max(dot(r, lightDir), 0.0), 24.0); col += float3(0.3)*spec;
+
+        } else if (hitType == 5.0) { // Cue Stick (Restored Original Shading)
+            float3 eps = float3(0.0005, 0.0, 0.0);
+            n = normalize(float3(
+                prRoundCylDf(cueHitPos + eps.xyy, 0.1, 0.05, CUE_LENGTH) - prRoundCylDf(cueHitPos - eps.xyy, 0.1, 0.05, CUE_LENGTH),
+                prRoundCylDf(cueHitPos + eps.yxy, 0.1, 0.05, CUE_LENGTH) - prRoundCylDf(cueHitPos - eps.yxy, 0.1, 0.05, CUE_LENGTH),
+                prRoundCylDf(cueHitPos + eps.yyx, 0.1, 0.05, CUE_LENGTH) - prRoundCylDf(cueHitPos - eps.yyx, 0.1, 0.05, CUE_LENGTH)
             ));
-
-            float2 feltUV = p.xz * 0.5;
-            float feltNoise = fbm(feltUV, 4);
-            float fiberDetail = noise(feltUV*15.0);
-            float shadowNoise = fbm(feltUV*0.2, 3);
-            float3 feltBaseColor = float3(0.1, 0.5, 0.2);
-            float3 fiberColor = float3(0.05,0.3,0.1);
-            float fiberMix = smoothstep(0.6, 0.8, fiberDetail);
-            float3 feltColor = mix(feltBaseColor, fiberColor, fiberMix);
-            feltColor *= (0.7 + 0.3*feltNoise);
-            float3 feltNormal = n;
-            float noiseGradX = fbm(feltUV + float2(0.01,0.0),4) - feltNoise;
-            float noiseGradZ = fbm(feltUV + float2(0.0,0.01),4) - feltNoise;
-            feltNormal += float3(noiseGradX, 0.0, noiseGradZ)*0.07;
-            feltNormal = normalize(feltNormal);
-            float shadowFactor = smoothstep(0.3, 0.7, shadowNoise);
-            float shadowStrength = 0.4;
-            float ambient = 0.7;
-
-            bool inPocket = false;
-            // If inside one of the pockets, just black out:
-            // (We've already carved out the SDF to make a hole.)
-            // So for visuals, we can check if p.xz is near any pocket center if desired.
-            // For simplicity, just color it if not obviously out-of-bounds.
-            if (!inPocket) {
-                col = feltColor;
-                float diff = max(dot(feltNormal, normalize(lightPos - p)),0.0);
-                float3 r = reflect(rd, feltNormal);
-                float spec = pow(max(dot(r, normalize(lightPos - p)),0.0),16.0);
-                col *= (ambient + (1.0-ambient)*diff*(1.0-shadowStrength*(1.0-shadowFactor)));
-                col += float3(0.15)*spec*(0.5 + 0.5*feltNoise);
-            }
-        }
-        else if (hitSurface == 2.0) {
-            // Rails
-            float3 p = ro + rd*dstRails;
-
-            auto railDistAt = [&](float3 q) {
-                float ddHead  = prConvexPolyhedronFrom8Corners(q, HEAD_RAIL_CORNERS);
-                float ddFoot  = prConvexPolyhedronFrom8Corners(q, FOOT_RAIL_CORNERS);
-                float ddLHM   = prConvexPolyhedronFrom8Corners(q, LEFT_HEAD_MID_CORNERS);
-                float ddLMF   = prConvexPolyhedronFrom8Corners(q, LEFT_MID_FOOT_CORNERS);
-                float ddRHM   = prConvexPolyhedronFrom8Corners(q, RIGHT_HEAD_MID_CORNERS);
-                float ddRMF   = prConvexPolyhedronFrom8Corners(q, RIGHT_MID_FOOT_CORNERS);
-                return min(ddHead, min(ddFoot, min(ddLHM, min(ddLMF, min(ddRHM, ddRMF)))));
-            };
-
-            float3 eps = float3(0.001,0,0);
-            float3 n = normalize(float3(
-                railDistAt(p + eps.xyy) - railDistAt(p - eps.xyy),
-                railDistAt(p + eps.yxy) - railDistAt(p - eps.yxy),
-                railDistAt(p + eps.yyx) - railDistAt(p - eps.yyx)
-            ));
-
-            col = float3(0.65, 0.16, 0.16);
-            float diff = max(dot(n, normalize(lightPos - p)), 0.0);
+            // Original coloring: different colors near the tip vs butt
+            col = (cueHitPos.z < 2.2) ? float3(0.5, 0.3, 0.0) : float3(0.7, 0.7, 0.3);
+            float diff = max(dot(n, lightDir), 0.0);
             float3 r = reflect(rd, n);
-            float spec = pow(max(dot(r, normalize(lightPos - p)), 0.0), 16.0);
+            float spec = pow(max(dot(r, lightDir), 0.0), 16.0);
             col *= (0.3 + 0.7*diff);
             col += float3(0.2)*spec;
         }
-        else if (hitSurface == 3.0) {
-            // Cue
-            float3 p = ro + rd*dstCue;
-            float3 eps = float3(0.001, 0.0, 0.0);
-            float3 n = normalize(float3(
-                prRoundCylDf(cueHitPos + eps.xyy, 0.1, 0.05, 2.5)
-              - prRoundCylDf(cueHitPos - eps.xyy, 0.1, 0.05, 2.5),
-                prRoundCylDf(cueHitPos + eps.yxy, 0.1, 0.05, 2.5)
-              - prRoundCylDf(cueHitPos - eps.yxy, 0.1, 0.05, 2.5),
-                prRoundCylDf(cueHitPos + eps.yyx, 0.1, 0.05, 2.5)
-              - prRoundCylDf(cueHitPos - eps.yyx, 0.1, 0.05, 2.5)
-            ));
-            // Slightly different colors near the tip vs butt:
-            col = (cueHitPos.z < 2.2) ? float3(0.5,0.3,0.0) : float3(0.7,0.7,0.3);
-            float diff = max(dot(n, normalize(lightPos - p)),0.0);
-            float3 r = reflect(rd, n);
-            float spec = pow(max(dot(r, normalize(lightPos - p)),0.0),16.0);
-            col *= (0.3 + 0.7*diff);
-            col += float3(0.2)*spec;
-        }
+    } else {
+        // Background
+        col = float3(0.05, 0.05, 0.1);
     }
 
     return clamp(col, 0.0, 1.0);
@@ -483,18 +454,9 @@ float3 showScene(float3 ro, float3 rd,
 //   6) Vertex & Fragment Shaders
 // -------------------------------------
 vertex VertexOut vertexShader(uint vertexID [[vertex_id]]) {
-    constexpr float2 positions[4] = {
-        float2(-1.0, -1.0), float2( 1.0, -1.0),
-        float2(-1.0,  1.0), float2( 1.0,  1.0)
-    };
-    constexpr float2 uvs[4] = {
-        float2(0.0, 0.0), float2(1.0, 0.0),
-        float2(0.0, 1.0), float2(1.0, 1.0)
-    };
-    VertexOut out;
-    out.position = float4(positions[vertexID], 0.0, 1.0);
-    out.uv = uvs[vertexID];
-    return out;
+    constexpr float2 positions[4] = { float2(-1.0, -1.0), float2( 1.0, -1.0), float2(-1.0,  1.0), float2( 1.0,  1.0) };
+    constexpr float2 uvs[4] = { float2(0.0, 0.0), float2(1.0, 0.0), float2(0.0, 1.0), float2(1.0, 1.0) };
+    VertexOut out; out.position = float4(positions[vertexID], 0.0, 1.0); out.uv = uvs[vertexID]; return out;
 }
 
 fragment float4 fragmentShader(VertexOut in [[stage_in]],
@@ -506,22 +468,16 @@ fragment float4 fragmentShader(VertexOut in [[stage_in]],
                                constant float2 &cueTipOffset [[buffer(5)]],
                                constant float &cueAngle      [[buffer(6)]],
                                constant float2 &cue3DRotate  [[buffer(7)]]) {
-    float2 uv = 2.0 * in.uv - 1.0;
-    uv.x *= resolution.x / resolution.y;
-
-    float3 target = float3(0.0, 0.0, 0.0);
-    float3 ro = float3(0.0, 10.0, 20.0);
+    float2 uv = 2.0 * in.uv - 1.0; uv.x *= resolution.x / resolution.y;
     float angle = time * 0.1;
-    ro = float3(sin(angle)*20.0, 10.0, cos(angle)*20.0);
-
-    float3 vd = normalize(target - ro);
-    float3 right = normalize(cross(float3(0.0,1.0,0.0), vd));
-    float3 up = normalize(cross(vd, right));
-    const float fov = 0.8;
-    float3 rd = normalize(vd + right*uv.x*fov + up*uv.y*fov);
-
-    float3 col = showScene(ro, rd, time, cueOffset, cueTipOffset,
-                           balls, cueVisible, cueAngle, cue3DRotate);
+    float3 camPos = float3(sin(angle)*25.0, 12.0, cos(angle)*25.0);
+    float3 camTarget = float3(0.0, -0.6, 0.0); // Adjusted to look at the new felt height
+    float3 ww = normalize(camTarget - camPos);
+    float3 uu = normalize(cross(float3(0.0, 1.0, 0.0), ww));
+    float3 vv = normalize(cross(ww, uu));
+    const float fov = 0.7;
+    float3 rd = normalize(ww + uu*uv.x*fov + vv*uv.y*fov);
+    float3 col = showScene(camPos, rd, time, cueOffset, cueTipOffset, balls, cueVisible, cueAngle, cue3DRotate);
     return float4(col, 1.0);
 }
 
@@ -535,21 +491,15 @@ fragment float4 behindBallFragmentShader(VertexOut in [[stage_in]],
                                          constant float2 &cueTipOffset [[buffer(6)]],
                                          constant float  &cueAngle     [[buffer(7)]],
                                          constant float2 &cue3DRotate  [[buffer(8)]]) {
-    float2 uv = 2.0 * in.uv - 1.0;
-    uv.x *= resolution.x / resolution.y;
-
-    float3 ro = cameraPos;
-    float3 target = cameraTarget;
-
-    float3 vd = normalize(target - ro);
-    float3 right = normalize(cross(float3(0.0, 1.0, 0.0), vd));
-    float3 up = normalize(cross(vd, right));
+    float2 uv = 2.0 * in.uv - 1.0; uv.x *= resolution.x / resolution.y;
+    float3 ro = cameraPos; float3 target = cameraTarget;
+    float3 ww = normalize(target - ro);
+    float3 uu = normalize(cross(float3(0.0, 1.0, 0.0), ww));
+    float3 vv = normalize(cross(ww, uu));
     const float fov = 0.8;
-    float3 rd = normalize(vd + right*uv.x*fov + up*uv.y*fov);
-
+    float3 rd = normalize(ww + uu*uv.x*fov + vv*uv.y*fov);
     float timeDummy = 0.0;
-    float3 col = showScene(ro, rd, timeDummy, cueOffset, cueTipOffset,
-                           balls, cueVisible, cueAngle, cue3DRotate);
+    float3 col = showScene(ro, rd, timeDummy, cueOffset, cueTipOffset, balls, cueVisible, cueAngle, cue3DRotate);
     return float4(col, 1.0);
 }
 
@@ -563,21 +513,15 @@ fragment float4 thirdBallFragmentShader(VertexOut in [[stage_in]],
                                         constant float2 &cueTipOffset [[buffer(6)]],
                                         constant float  &cueAngle     [[buffer(7)]],
                                         constant float2 &cue3DRotate  [[buffer(8)]]) {
-    float2 uv = 2.0 * in.uv - 1.0;
-    uv.x *= resolution.x / resolution.y;
-
-    float3 ro = cameraPos;
-    float3 target = cameraTarget;
-
-    float3 vd = normalize(target - ro);
-    float3 right = normalize(cross(float3(0.0,1.0,0.0), vd));
-    float3 up = normalize(cross(vd, right));
+    float2 uv = 2.0 * in.uv - 1.0; uv.x *= resolution.x / resolution.y;
+    float3 ro = cameraPos; float3 target = cameraTarget;
+    float3 ww = normalize(target - ro);
+    float3 uu = normalize(cross(float3(0.0, 1.0, 0.0), ww));
+    float3 vv = normalize(cross(ww, uu));
     const float fov = 0.8;
-    float3 rd = normalize(vd + right*uv.x*fov + up*uv.y*fov);
-
+    float3 rd = normalize(ww + uu*uv.x*fov + vv*uv.y*fov);
     float timeDummy = 0.0;
-    float3 col = showScene(ro, rd, timeDummy, cueOffset, cueTipOffset,
-                           balls, cueVisible, cueAngle, cue3DRotate);
+    float3 col = showScene(ro, rd, timeDummy, cueOffset, cueTipOffset, balls, cueVisible, cueAngle, cue3DRotate);
     return float4(col, 1.0);
 }
 """
