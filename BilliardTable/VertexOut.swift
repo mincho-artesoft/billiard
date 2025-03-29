@@ -255,8 +255,12 @@ float sdPocketJaw(float3 p, float2 center, float angle, float major_radius, floa
     float theta_normalized = abs(theta) / (angle_range * 0.5);
     float length_dist = smoothstep(0.9, 1.0, theta_normalized) * dist_to_ellipse;
 
-    float radial_dist = dist_to_ellipse - JAW_THICKNESS;
-    float profile_dist = sdK55Profile(float2(radial_dist, p_local.y));
+    // Modified radial_dist: Flip K55 profile so nose faces outward
+    float radial_dist = dist_to_ellipse - JAW_THICKNESS; // Original: flat back at ellipse, nose inward
+    // New approach: shift K55 profile outward so nose is outside
+    float k55_thickness = RAIL_BACK_DEPTH; // Total thickness of K55 profile (0.6 from constants)
+    float radial_dist_flipped = -(dist_to_ellipse - JAW_THICKNESS); // Negative to flip inward/outward
+    float profile_dist = sdK55Profile(float2(radial_dist_flipped + k55_thickness, p_local.y));
 
     return max(profile_dist, length_dist);
 }
