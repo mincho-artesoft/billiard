@@ -14,28 +14,28 @@ constant float PI = 3.1415926535;
 constant float BALL_RADIUS = 0.47;
 constant float BALL_DIAMETER = 2.0 * BALL_RADIUS; // = 0.94
 constant float CUE_LENGTH = 2.5;
-constant float FELT_HEIGHT = 0.01; // Top surface of felt aligned with physics ground plane
+constant float FELT_HEIGHT = 0.01;
 
-// Define K55 dimensions in shader units (1 inch = 0.4178 units approx)
-constant float NOSE_HEIGHT    = 0.609; // 1.458 inches
+// K55 dimensions (1 unit = ~0.4178 inches)
+constant float NOSE_HEIGHT    = 0.596; // 1.425 inches
 constant float SUBRAIL_H      = 0.705; // 1.688 inches
-constant float SUBRAIL_ANGLE  = 23.5 * (PI / 180.0); // In radians
-constant float RAIL_BACK_DEPTH = 0.6; // Estimated depth of cushion back
+constant float SUBRAIL_ANGLE  = 25.0 * (PI / 180.0); // 25°
+constant float RAIL_BACK_DEPTH = 0.6;
 
-// Table dimensions (outer edges)
+// Table dimensions
 constant float TABLE_HALF_WIDTH  = 7.6;
 constant float TABLE_HALF_LENGTH = 13.6;
 
-// Playing surface dimensions (inside the cushions)
-constant float CUSHION_THICKNESS = 0.8356; // 2 inches
-constant float PLAYING_HALF_WIDTH  = TABLE_HALF_WIDTH - CUSHION_THICKNESS;  // 6.7644
-constant float PLAYING_HALF_LENGTH = TABLE_HALF_LENGTH - CUSHION_THICKNESS; // 12.7644
+// Playing surface dimensions
+constant float CUSHION_THICKNESS = 0.8356;
+constant float PLAYING_HALF_WIDTH  = TABLE_HALF_WIDTH - CUSHION_THICKNESS;
+constant float PLAYING_HALF_LENGTH = TABLE_HALF_LENGTH - CUSHION_THICKNESS;
 
-// Pocket Radii (Adjusted for realism)
-constant float CORNER_POCKET_R = 0.9;  // ~4.3 inches diameter
-constant float SIDE_POCKET_R   = 1.0;  // ~4.8 inches diameter
+// Pocket Radii
+constant float CORNER_POCKET_R = 0.9;
+constant float SIDE_POCKET_R   = 1.0;
 
-// Rail positions (adjusted to align cushion face with playing surface edges)
+// Rail positions
 constant float RAIL_LENGTH_X = PLAYING_HALF_WIDTH;
 constant float SIDE_RAIL_NEAR_Z_END = SIDE_POCKET_R;
 constant float SIDE_RAIL_FAR_Z_END  = PLAYING_HALF_LENGTH;
@@ -88,13 +88,11 @@ float3 hsvToRgb(float3 c) {
     return c.z * mix(float3(1.0), clamp(p - 1.0, 0.0, 1.0), c.y);
 }
 
-// Box SDF - centered at origin
 float prBoxDf(float3 p, float3 b) {
     float3 q = abs(p) - b;
     return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);
 }
 
-// Cylinder SDF - centered at origin, aligned with Y axis
 float sdCylinder(float3 p, float r, float h) {
     float2 d = abs(float2(length(p.xz), p.y)) - float2(r, h);
     return min(max(d.x, d.y), 0.0) + length(max(d, 0.0));
@@ -151,7 +149,7 @@ void ballHit(float3 ro, float3 rd, thread float &dist, thread float3 &normal,
     normal = float3(0.0);
     id = -1;
     for (int n = 0; n < nBall; n++) {
-        float ballCenterY = balls[n].height + BALL_RADIUS; // No -0.6 offset, height is relative to y=0
+        float ballCenterY = balls[n].height + BALL_RADIUS;
         float3 ballPos = float3(balls[n].position.x, ballCenterY, balls[n].position.y);
         if (isinf(balls[n].velocity.x)) continue;
         float3 u = ro - ballPos;
@@ -171,44 +169,78 @@ void ballHit(float3 ro, float3 rd, thread float &dist, thread float3 &normal,
 // -------------------------------------
 //   3) K55 Rail Profile & Pocket SDFs
 // -------------------------------------
-float sdK55Profile(float2 p) {
-    float2 n_cushion = normalize(float2(0.4508, -0.133));
+float sdK55Profile(float2 p, float scale) {
+    float2 p0 = float2(0.0, NOSE_HEIGHT); // Nose point
+    float2 p1 = float2(0.0, 0.0); // Bottom point (cushion face)
+    float2 p2 = float2(RAIL_BACK_DEPTH * scale, SUBRAIL_H * scale); // Top-back point
+    float2 p3 = float2(RAIL_BACK_DEPTH * scale, 0.0); // Bottom-back point
+
+    float2 n_cushion = normalize(float2(0.43, -0.15));
     n_cushion.x = -n_cushion.x;
-    float dist_cushion = dot(n_cushion, p - float2(0.0, NOSE_HEIGHT));
-    float top_y = NOSE_HEIGHT + 0.05;
+    float dist_cushion = dot(n_cushion, p - p0);
+
     float2 n_top = float2(0.0, 1.0);
-    float dist_top = dot(n_top, p - float2(0.0, top_y));
+    float dist_top = dot(n_top, p - float2(0.0, SUBRAIL_H * scale + 0.05));
+
     float2 n_subrail = float2(-sin(SUBRAIL_ANGLE), cos(SUBRAIL_ANGLE));
-    float2 subrail_anchor = float2(0.1, NOSE_HEIGHT - 0.15);
+    float2 subrail_anchor = float2(0.15 * scale, NOSE_HEIGHT * scale - 0.2 * scale);
     float dist_subrail = dot(n_subrail, p - subrail_anchor);
+
     float2 n_back = float2(1.0, 0.0);
-    float dist_back = dot(n_back, p - float2(RAIL_BACK_DEPTH, 0.0));
+    float dist_back = dot(n_back, p - p3);
+
     float2 n_bottom = float2(0.0, -1.0);
-    float dist_bottom = dot(n_bottom, p - float2(0.0, 0.0));
+    float dist_bottom = dot(n_bottom, p - p1);
+
     float dist = max(dist_cushion, dist_top);
     dist = max(dist, dist_back);
     dist = max(dist, dist_bottom);
     dist = max(dist, dist_subrail);
-    return dist;
+
+    return dist - 0.04;
 }
 
 float sdRailSegment(float3 p, float rail_start, float rail_end, float rail_axis_pos, int axis) {
-    float3 p_relative = p - float3(0.0, FELT_HEIGHT, 0.0); // Offset rails to start at FELT_HEIGHT
+    float3 p_relative = p - float3(0.0, FELT_HEIGHT, 0.0);
     float rail_coord, depth_coord_signed, height_coord;
     float half_length = abs(rail_end - rail_start) / 2.0;
     float mid_point = (rail_start + rail_end) / 2.0;
     height_coord = p_relative.y;
-    if (axis == 0) {
+
+    float profile_dist;
+    float length_dist;
+
+    if (axis == 0) { // Head/Foot rails (along X)
         rail_coord = p_relative.x;
         depth_coord_signed = (p_relative.z - rail_axis_pos) * sign(rail_axis_pos);
-        float length_dist = abs(rail_coord - mid_point) - half_length;
-        float profile_dist = sdK55Profile(float2(depth_coord_signed, height_coord));
+        length_dist = abs(rail_coord - mid_point) - half_length;
+
+        float taper_zone = 2.5;
+        float taper_min_scale = 0.3;
+        float dist_to_end = min(abs(rail_coord - rail_start), abs(rail_coord - rail_end));
+        float taper = smoothstep(0.0, taper_zone, dist_to_end);
+        float scale = mix(taper_min_scale, 1.0, taper);
+        profile_dist = sdK55Profile(float2(depth_coord_signed, height_coord), scale);
+
+        float fillet_radius = 0.15;
+        profile_dist -= fillet_radius * (1.0 - taper);
+
         return max(profile_dist, length_dist);
-    } else {
+    } else { // Side rails (along Z)
         rail_coord = p_relative.z;
         depth_coord_signed = (p_relative.x - rail_axis_pos) * sign(rail_axis_pos);
-        float length_dist = abs(rail_coord - mid_point) - half_length;
-        float profile_dist = sdK55Profile(float2(depth_coord_signed, height_coord));
+        length_dist = abs(rail_coord - mid_point) - half_length;
+
+        float taper_zone = 2.5;
+        float taper_min_scale = 0.3;
+        float dist_to_end = min(abs(rail_coord - rail_start), abs(rail_coord - rail_end));
+        float taper = smoothstep(0.0, taper_zone, dist_to_end);
+        float scale = mix(taper_min_scale, 1.0, taper);
+        profile_dist = sdK55Profile(float2(depth_coord_signed, height_coord), scale);
+
+        float fillet_radius = 0.15;
+        profile_dist -= fillet_radius * (1.0 - taper);
+
         return max(profile_dist, length_dist);
     }
 }
@@ -222,10 +254,9 @@ float sdPocket(float3 p, float2 center, float radius) {
 //   4) Scene Mapping & Normals
 // -------------------------------------
 float map(float3 p, thread float& hitType, thread float& pocketDist) {
-    hitType = 0.0; // 0=miss, 1=felt, 2=rail, 3=pocket_hole
+    hitType = 0.0;
     pocketDist = 1000.0;
 
-    // Bounding Sphere
     float sceneRadius = max(TABLE_HALF_WIDTH, TABLE_HALF_LENGTH) + 2.0;
     float boundsDist = length(p.xz) - sceneRadius;
     boundsDist = max(boundsDist, abs(p.y) - 5.0);
@@ -234,13 +265,11 @@ float map(float3 p, thread float& hitType, thread float& pocketDist) {
         return boundsDist;
     }
 
-    // Felt SDF - Top surface at FELT_HEIGHT
     float felt_thickness = 0.01;
-    float felt_center_y = FELT_HEIGHT - felt_thickness; // Center below top surface
+    float felt_center_y = FELT_HEIGHT - felt_thickness;
     float dFelt = prBoxDf(p - float3(0.0, felt_center_y, 0.0), 
                          float3(PLAYING_HALF_WIDTH, felt_thickness, PLAYING_HALF_LENGTH));
 
-    // Rail Segment SDFs
     float dHeadRail = sdRailSegment(p, -RAIL_LENGTH_X, RAIL_LENGTH_X, PLAYING_HALF_LENGTH, 0);
     float dFootRail = sdRailSegment(p, -RAIL_LENGTH_X, RAIL_LENGTH_X, -PLAYING_HALF_LENGTH, 0);
     float dLeftRailFar = sdRailSegment(p, SIDE_RAIL_NEAR_Z_END, SIDE_RAIL_FAR_Z_END - CORNER_POCKET_R, 
@@ -256,7 +285,6 @@ float map(float3 p, thread float& hitType, thread float& pocketDist) {
 
     float dRails = min(min(dHeadRail, dFootRail), min(dLeftRail, dRightRail));
 
-    // Pocket SDFs
     float dPocketCorners = 1000.0;
     for (int i = 0; i < 4; ++i) {
         dPocketCorners = min(dPocketCorners, sdPocket(p, CORNER_POCKET_CENTERS[i], CORNER_POCKET_R));
@@ -268,23 +296,19 @@ float map(float3 p, thread float& hitType, thread float& pocketDist) {
     float dPocketsXZ = min(dPocketCorners, dPocketSides);
     pocketDist = dPocketsXZ;
 
-    // Combine felt and rails
     float dSolid = min(dFelt, dRails);
 
-    // Pocket logic
     if (dPocketsXZ < 0.01 && p.y < FELT_HEIGHT) {
-        hitType = 3.0; // Inside pocket
-        return dSolid; // Return distance to nearest solid surface
+        hitType = 3.0;
+        return dSolid;
     }
 
-    // Otherwise, return standard distance
     float d = max(dSolid, -dPocketsXZ);
 
-    // Determine hit type
     if (dSolid == dFelt) {
-        hitType = 1.0; // Felt
+        hitType = 1.0;
     } else if (dRails < dFelt) {
-        hitType = 2.0; // Rail
+        hitType = 2.0;
     }
 
     return d;
@@ -294,7 +318,7 @@ float3 getNormal(float3 p, thread float& hitType, thread float& pocketDist) {
     float2 e = float2(0.0005, 0.0);
     float ht_ignore, pd_ignore;
     if (hitType == 3.0) {
-        return float3(0.0, -1.0, 0.0); // Dummy normal for pocket
+        return float3(0.0, -1.0, 0.0);
     }
     return normalize(float3(
         map(p + e.xyy, ht_ignore, pd_ignore) - map(p - e.xyy, ht_ignore, pd_ignore),
@@ -329,7 +353,7 @@ float3 showScene(float3 ro, float3 rd,
     float pocketDistAtHit = 1000.0;
     float3 cueHitPos;
 
-    for (int i = 0; i < 80; i++) {
+    for (int i = 0; i < 120; i++) { // Increased iterations for better quality
         float3 p = ro + rd * t;
         float dCueStick = maxDist;
         if (cueVisible != 0 && !isinf(balls[0].velocity.x)) {
@@ -352,47 +376,26 @@ float3 showScene(float3 ro, float3 rd,
         float mapPocketDist = 1000.0;
         float dEnv = map(p, mapHitType, mapPocketDist);
 
-        if (mapHitType == 3.0) {
-            // Inside pocket: only check cue stick collision, treat as empty space
-            float d = dCueStick;
-            if (d < 0.0005 || t > dstBall) {
-                if (dstBall <= t + 0.001 && dstBall < maxDist) {
-                    hitDist = dstBall;
-                    hitType = 4.0;
-                } else if (dCueStick < maxDist) {
-                    hitDist = t;
-                    hitType = 5.0;
-                } else {
-                    hitDist = maxDist;
-                    hitType = 0.0;
-                }
-                break;
+        float d = min(dEnv, dCueStick);
+        if (d < 0.0005 || t > dstBall) {
+            if (dstBall <= t + 0.001 && dstBall < maxDist) {
+                hitDist = dstBall;
+                hitType = 4.0;
+            } else if (dEnv <= dCueStick) {
+                hitDist = t;
+                hitType = mapHitType;
+                pocketDistAtHit = mapPocketDist;
+            } else if (dCueStick < maxDist) {
+                hitDist = t;
+                hitType = 5.0;
+            } else {
+                hitDist = maxDist;
+                hitType = 0.0;
             }
-            t += max(0.01, 0.001); // Modified step inside pocket
-            if (t > maxDist) break;
-        } else {
-            // Standard collision check
-            float d = min(dEnv, dCueStick);
-            if (d < 0.0005 || t > dstBall) {
-                if (dstBall <= t + 0.001 && dstBall < maxDist) {
-                    hitDist = dstBall;
-                    hitType = 4.0;
-                } else if (dEnv <= dCueStick) {
-                    hitDist = t;
-                    hitType = mapHitType;
-                    pocketDistAtHit = mapPocketDist;
-                } else if (dCueStick < maxDist) {
-                    hitDist = t;
-                    hitType = 5.0;
-                } else {
-                    hitDist = maxDist;
-                    hitType = 0.0;
-                }
-                break;
-            }
-            t += max(d * 0.7, 0.001);
-            if (t > maxDist) break;
+            break;
         }
+        t += max(d * 0.7, 0.001); // Adaptive step size
+        if (t > maxDist) break;
     }
 
     if (hitType > 0.0) {
@@ -402,7 +405,7 @@ float3 showScene(float3 ro, float3 rd,
         float3 lightDir = normalize(lightPos - p);
         float ambient = 0.4;
 
-        if (hitType == 1.0) {
+        if (hitType == 1.0) { // Felt
             float ignoredHitType;
             n = getNormal(p, ignoredHitType, pocketDistAtHit);
             float2 feltUV = p.xz * 0.5;
@@ -418,18 +421,28 @@ float3 showScene(float3 ro, float3 rd,
             float spec = pow(max(dot(r, lightDir), 0.0), 8.0);
             col = feltColor * (ambient + (1.0 - ambient) * diff);
             col += float3(0.05) * spec * (0.5 + 0.5 * feltNoise);
-        } else if (hitType == 2.0) {
+        } else if (hitType == 2.0) { // Rail
             float ignoredHitType;
             n = getNormal(p, ignoredHitType, pocketDistAtHit);
-            col = float3(0.4, 0.25, 0.15);
+
+            float2 woodUV = (p.x > p.z) ? p.xy : p.zy;
+            float woodGrain = fbm(woodUV * 5.0, 4);
+            float grainDetail = noise(woodUV * 20.0);
+            float3 woodBaseColor = float3(0.45, 0.3, 0.2);
+            float3 woodGrainColor = float3(0.3, 0.15, 0.1);
+            float3 railColor = mix(woodBaseColor, woodGrainColor, smoothstep(0.3, 0.7, woodGrain));
+
+            float3 normalPerturb = float3(noise(woodUV * 10.0) - 0.5, noise(woodUV * 10.0 + 100.0) - 0.5, 0.0) * 0.1;
+            n = normalize(n + normalPerturb);
+
             float diff = max(dot(n, lightDir), 0.0);
             float3 r = reflect(rd, n);
-            float spec = pow(max(dot(r, lightDir), 0.0), 32.0);
-            col *= (ambient + (1.0 - ambient) * diff);
-            col += float3(0.4) * spec;
-        } else if (hitType == 3.0) {
+            float spec = pow(max(dot(r, lightDir), 0.0), 64.0);
+            col = railColor * (ambient + (1.0 - ambient) * diff);
+            col += float3(0.5) * spec * (0.7 + 0.3 * grainDetail);
+        } else if (hitType == 3.0) { // Pocket
             col = float3(0.01, 0.01, 0.01);
-        } else if (hitType == 4.0) {
+        } else if (hitType == 4.0) { // Ball
             n = ballNormal;
             int id = ballId;
             if (id == 0) { col = float3(1.0); }
@@ -439,14 +452,15 @@ float3 showScene(float3 ro, float3 rd,
                 if (id == 8) { baseColor = float3(0.0); }
                 else {
                     float hue = 0.0;
-                    if (id == 1 || id == 9) hue = 1.0 / 6.0;
-                    if (id == 2 || id == 10) hue = 4.0 / 6.0;
-                    if (id == 3 || id == 11) hue = 0.0 / 6.0;
-                    if (id == 4 || id == 12) hue = 5.0 / 6.0;
-                    if (id == 5 || id == 13) hue = 0.5 / 6.0;
-                    if (id == 6 || id == 14) hue = 2.0 / 6.0;
-                    if (id == 7 || id == 15) hue = 0.25 / 6.0;
-                    baseColor = hsvToRgb(float3(hue, 1.0, 1.0));
+                    // Adjusted hues for standard billiard ball colors
+                    if (id == 1 || id == 9) hue = 60.0 / 360.0;  // Yellow
+                    if (id == 2 || id == 10) hue = 240.0 / 360.0; // Blue
+                    if (id == 3 || id == 11) hue = 0.0 / 360.0;   // Red
+                    if (id == 4 || id == 12) hue = 300.0 / 360.0; // Purple
+                    if (id == 5 || id == 13) hue = 30.0 / 360.0;  // Orange
+                    if (id == 6 || id == 14) hue = 120.0 / 360.0; // Green
+                    if (id == 7 || id == 15) hue = 330.0 / 360.0; // Maroon
+                    baseColor = hsvToRgb(float3(hue, 0.9, 1.0));
                 }
                 float3x3 rotMat = qtToRMat(balls[id].quaternion);
                 float3 rotatedNormal = rotMat * n;
@@ -454,6 +468,7 @@ float3 showScene(float3 ro, float3 rd,
                                  acos(rotatedNormal.y) / PI);
                 if (isStriped && id != 8) {
                     float stripeWidth = 0.3;
+                    float stripePattern = sin(uv.x * 10.0) * 0.5 + 0.5;
                     col = mix(float3(1.0), baseColor, step(stripeWidth, uv.y) * step(uv.y, 1.0 - stripeWidth));
                 } else {
                     col = baseColor;
@@ -470,7 +485,7 @@ float3 showScene(float3 ro, float3 rd,
             float3 r = reflect(rd, n);
             float spec = pow(max(dot(r, lightDir), 0.0), 24.0);
             col += float3(0.3) * spec;
-        } else if (hitType == 5.0) {
+        } else if (hitType == 5.0) { // Cue Stick
             float3 eps = float3(0.0005, 0.0, 0.0);
             n = normalize(float3(
                 prRoundCylDf(cueHitPos + eps.xyy, 0.1, 0.05, CUE_LENGTH) - 
@@ -519,7 +534,7 @@ fragment float4 fragmentShader(VertexOut in [[stage_in]],
     uv.x *= resolution.x / resolution.y;
     float angle = time * 0.1;
     float3 camPos = float3(sin(angle) * 25.0, 12.0, cos(angle) * 25.0);
-    float3 camTarget = float3(0.0, FELT_HEIGHT, 0.0); // Center on felt surface
+    float3 camTarget = float3(0.0, FELT_HEIGHT, 0.0);
     float3 ww = normalize(camTarget - camPos);
     float3 uu = normalize(cross(float3(0.0, 1.0, 0.0), ww));
     float3 vv = normalize(cross(ww, uu));
@@ -640,7 +655,6 @@ final class BilliardSimulation: ObservableObject {
     private let tableWidth: Float = 7.6
     private let tableLength: Float = 13.6
     private let cushionThickness: Float = 0.8356
-    private let pocketRadius: Float = 0.53  // Not used for pockets anymore—kept for legacy
     private let cushionEdgeX: Float = 6.7644
     private let cushionEdgeZ: Float = 12.7644
     private let cuePullSpeed: Float = 1.0
@@ -725,33 +739,34 @@ final class BilliardSimulation: ObservableObject {
         let d: Float = 2.0 * r  // Ball diameter = 0.94
         let sqrt3_2: Float = sqrt(3.0) / 2.0  // ≈ 0.866
         let rowSpacing: Float = d * sqrt3_2  // Vertical spacing between rows ≈ 0.814
-        let headSpotZ: Float = tableHalfLength / 2.0  // z = 6.8 (quarter of table length from head rail)
-        let footSpotZ: Float = -tableHalfLength / 2.0  // z = -6.8 (center of the rack, same distance from center as head spot)
+        let headSpotZ: Float = tableHalfLength / 2.0  // z = 6.8
+        let footSpotZ: Float = -tableHalfLength / 2.0  // z = -6.8
         let identityQuat = SIMD4<Float>(0, 0, 0, 1)
+
+        // Corrected ball positions for a standard 8-ball rack
         self.balls = [
             // Cue ball (index 0) at head spot
             BallData(position: SIMD2<Float>(0.0, headSpotZ), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
-            // Row 1 (1 ball, 2 rows above 8-ball, index 1)
-            BallData(position: SIMD2<Float>(0.0, footSpotZ + 2.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
-            // Row 2 (2 balls, 1 row above 8-ball, indices 2–3)
-            BallData(position: SIMD2<Float>(-d / 2.0, footSpotZ + rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
-            BallData(position: SIMD2<Float>(d / 2.0, footSpotZ + rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
-            // Row 3 (3 balls, same z as 8-ball, indices 4–6, 8-ball at index 8)
-            BallData(position: SIMD2<Float>(-d, footSpotZ), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // Index 4
-            BallData(position: SIMD2<Float>(-1.5 * d, footSpotZ - rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // Index 5, moved to row 4
-            BallData(position: SIMD2<Float>(d, footSpotZ), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // Index 6
-            // Row 4 (4 balls, 1 row below 8-ball, indices 7–10)
-            BallData(position: SIMD2<Float>(-0.5 * d, footSpotZ - rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // Index 7
-            // 8-ball (index 8) at the center of the rack (center of row 3)
-            BallData(position: SIMD2<Float>(0.0, footSpotZ), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
-            BallData(position: SIMD2<Float>(0.5 * d, footSpotZ - rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // Index 9
-            BallData(position: SIMD2<Float>(1.5 * d, footSpotZ - rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // Index 10
-            // Row 5 (5 balls, 2 rows below 8-ball, indices 11–15)
-            BallData(position: SIMD2<Float>(-2.0 * d, footSpotZ - 2.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
-            BallData(position: SIMD2<Float>(-1.0 * d, footSpotZ - 2.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
-            BallData(position: SIMD2<Float>(0.0, footSpotZ - 2.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
-            BallData(position: SIMD2<Float>(1.0 * d, footSpotZ - 2.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
-            BallData(position: SIMD2<Float>(2.0 * d, footSpotZ - 2.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat)
+            // Row 1 (1 ball, apex)
+            BallData(position: SIMD2<Float>(0.0, footSpotZ + 2.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 1-ball (yellow, solid)
+            // Row 2 (2 balls)
+            BallData(position: SIMD2<Float>(-d / 2.0, footSpotZ + rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 2-ball (blue, solid)
+            BallData(position: SIMD2<Float>(d / 2.0, footSpotZ + rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 9-ball (yellow, striped)
+            // Row 3 (3 balls, 8-ball in the center)
+            BallData(position: SIMD2<Float>(-d, footSpotZ), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 3-ball (red, solid)
+            BallData(position: SIMD2<Float>(0.0, footSpotZ), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 8-ball (black)
+            BallData(position: SIMD2<Float>(d, footSpotZ), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 10-ball (blue, striped)
+            // Row 4 (4 balls)
+            BallData(position: SIMD2<Float>(-1.5 * d, footSpotZ - rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 4-ball (purple, solid)
+            BallData(position: SIMD2<Float>(-0.5 * d, footSpotZ - rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 11-ball (red, striped)
+            BallData(position: SIMD2<Float>(0.5 * d, footSpotZ - rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 12-ball (purple, striped)
+            BallData(position: SIMD2<Float>(1.5 * d, footSpotZ - rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 5-ball (orange, solid)
+            // Row 5 (5 balls)
+            BallData(position: SIMD2<Float>(-2.0 * d, footSpotZ - 2.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 6-ball (green, solid)
+            BallData(position: SIMD2<Float>(-1.0 * d, footSpotZ - 2.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 13-ball (orange, striped)
+            BallData(position: SIMD2<Float>(0.0, footSpotZ - 2.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 7-ball (maroon, solid)
+            BallData(position: SIMD2<Float>(1.0 * d, footSpotZ - 2.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 14-ball (green, striped)
+            BallData(position: SIMD2<Float>(2.0 * d, footSpotZ - 2.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat) // 15-ball (maroon, striped)
         ]
 
         var ballShaderData = [BallShaderData](
@@ -785,20 +800,18 @@ final class BilliardSimulation: ObservableObject {
     }
 
     private func checkPocket(pos: SIMD2<Float>, height: Float) -> Bool {
-        // Pocket positions matching the shader's CORNER_POCKET_CENTERS and SIDE_POCKET_CENTERS
-        let railBackDepth: Float = 0.6 // Matches RAIL_BACK_DEPTH in the shader
+        let railBackDepth: Float = 0.6
         let pocketPositions: [SIMD2<Float>] = [
-            SIMD2<Float>(-cushionEdgeX,  cushionEdgeZ),           // Top-left corner
-            SIMD2<Float>( cushionEdgeX,  cushionEdgeZ),           // Top-right corner
-            SIMD2<Float>(-cushionEdgeX - railBackDepth,  0.0),    // Left side
-            SIMD2<Float>( cushionEdgeX + railBackDepth,  0.0),    // Right side
-            SIMD2<Float>(-cushionEdgeX, -cushionEdgeZ),           // Bottom-left corner
-            SIMD2<Float>( cushionEdgeX, -cushionEdgeZ)            // Bottom-right corner
+            SIMD2<Float>(-cushionEdgeX,  cushionEdgeZ),
+            SIMD2<Float>( cushionEdgeX,  cushionEdgeZ),
+            SIMD2<Float>(-cushionEdgeX - railBackDepth,  0.0),
+            SIMD2<Float>( cushionEdgeX + railBackDepth,  0.0),
+            SIMD2<Float>(-cushionEdgeX, -cushionEdgeZ),
+            SIMD2<Float>( cushionEdgeX, -cushionEdgeZ)
         ]
         
-        // Use the same radii as the shader
-        let cornerPocketRadius: Float = 0.9  // Matches CORNER_POCKET_R
-        let sidePocketRadius: Float = 1.0    // Matches SIDE_POCKET_R
+        let cornerPocketRadius: Float = 0.9
+        let sidePocketRadius: Float = 1.0
         
         for (index, pocketPos) in pocketPositions.enumerated() {
             let radius = (index == 2 || index == 3) ? sidePocketRadius : cornerPocketRadius
@@ -868,7 +881,6 @@ final class BilliardSimulation: ObservableObject {
 
                 // Friction if on the table
                 if ball.height <= 0.011 {
-                    // Compute the velocity of the contact point by combining linear velocity (v) with rotation (w)
                     let r3D = SIMD3<Float>(0, -ballRadius, 0)
                     let v3D = SIMD3<Float>(v.x, 0, v.y)
                     let contactVel3D = v3D + simd_cross(w, r3D)
@@ -920,7 +932,7 @@ final class BilliardSimulation: ObservableObject {
                     ball.quaternion = simd_normalize(ball.quaternion)
                 }
 
-                // Simple cushion collisions:
+                // Cushion collisions:
                 if abs(ball.position.x) > cushionEdgeX - ballRadius && ball.height <= 0.01 + ballRadius {
                     ball.position.x = (ball.position.x > 0)
                         ? (cushionEdgeX - ballRadius)
@@ -940,10 +952,9 @@ final class BilliardSimulation: ObservableObject {
                     ball.angularVelocity.y *= 0.6
                 }
 
-                // Pocket check if near slate drop
+                // Pocket check
                 if (i != 0 || ball.height <= 0.01 + ballRadius)
                    && checkPocket(pos: ball.position, height: ball.height) {
-                    // Mark as pocketed:
                     ball.velocity = SIMD2<Float>(.infinity, .infinity)
                     ball.verticalVelocity = 0.0
                     ball.angularVelocity = .zero
@@ -1105,7 +1116,6 @@ final class BilliardSimulation: ObservableObject {
         var cameraTarget = SIMD3<Float>(whiteBall.position.x, whiteBall.height, whiteBall.position.y)
         let speed = simd_length(whiteBall.velocity)
 
-        // If the white ball is basically stopped, place the camera a bit behind it:
         if speed < 0.01 {
             let stationaryDistance: Float = 2.5
             var offset = SIMD3<Float>(0,0,stationaryDistance)
@@ -1113,7 +1123,6 @@ final class BilliardSimulation: ObservableObject {
             cameraPosition = cameraTarget + offset
             cameraPosition.y = 0.7
         } else {
-            // If it's moving, track behind it:
             let forward = simd_normalize(SIMD3<Float>(whiteBall.velocity.x,0,whiteBall.velocity.y))
             cameraPosition = cameraTarget - forward*3.0
             cameraPosition.y += 1.0
