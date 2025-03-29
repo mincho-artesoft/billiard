@@ -14,43 +14,68 @@ constant float PI = 3.1415926535;
 constant float BALL_RADIUS = 0.47;
 constant float BALL_DIAMETER = 2.0 * BALL_RADIUS; // = 0.94
 constant float CUE_LENGTH = 2.5;
-constant float FELT_HEIGHT = 0.01; // Top surface of felt aligned with physics ground plane
+constant float FELT_HEIGHT = 0.01;
 
-// Define K55 dimensions in shader units (1 inch = 0.4178 units approx)
-constant float NOSE_HEIGHT    = 0.609; // 1.458 inches
-constant float SUBRAIL_H      = 0.705; // 1.688 inches
-constant float SUBRAIL_ANGLE  = 23.5 * (PI / 180.0); // In radians
-constant float RAIL_BACK_DEPTH = 0.6; // Estimated depth of cushion back
+// K55 dimensions
+constant float NOSE_HEIGHT    = 0.609;
+constant float SUBRAIL_H      = 0.705;
+constant float SUBRAIL_ANGLE  = 23.5 * (PI / 180.0);
+constant float RAIL_BACK_DEPTH = 0.6;
 
-// Table dimensions (outer edges)
+// Table dimensions
 constant float TABLE_HALF_WIDTH  = 7.6;
 constant float TABLE_HALF_LENGTH = 13.6;
+constant float CUSHION_THICKNESS = 0.8356;
+constant float PLAYING_HALF_WIDTH  = TABLE_HALF_WIDTH - CUSHION_THICKNESS;
+constant float PLAYING_HALF_LENGTH = TABLE_HALF_LENGTH - CUSHION_THICKNESS;
 
-// Playing surface dimensions (inside the cushions)
-constant float CUSHION_THICKNESS = 0.8356; // 2 inches
-constant float PLAYING_HALF_WIDTH  = TABLE_HALF_WIDTH - CUSHION_THICKNESS;  // 6.7644
-constant float PLAYING_HALF_LENGTH = TABLE_HALF_LENGTH - CUSHION_THICKNESS; // 12.7644
+// Pocket Radii
+constant float CORNER_POCKET_R = 0.9;
+constant float SIDE_POCKET_R   = 1.0;
 
-// Pocket Radii (Adjusted for realism)
-constant float CORNER_POCKET_R = 0.9;  // ~4.3 inches diameter
-constant float SIDE_POCKET_R   = 1.0;  // ~4.8 inches diameter
-
-// Rail positions (adjusted to align cushion face with playing surface edges)
+// Rail positions
 constant float RAIL_LENGTH_X = PLAYING_HALF_WIDTH;
 constant float SIDE_RAIL_NEAR_Z_END = SIDE_POCKET_R;
 constant float SIDE_RAIL_FAR_Z_END  = PLAYING_HALF_LENGTH;
 
 // Pocket Center Locations
 constant float2 CORNER_POCKET_CENTERS[4] = {
-    float2(-PLAYING_HALF_WIDTH,  PLAYING_HALF_LENGTH), 
+    float2(-PLAYING_HALF_WIDTH,  PLAYING_HALF_LENGTH),
     float2( PLAYING_HALF_WIDTH,  PLAYING_HALF_LENGTH),
-    float2(-PLAYING_HALF_WIDTH, -PLAYING_HALF_LENGTH), 
+    float2(-PLAYING_HALF_WIDTH, -PLAYING_HALF_LENGTH),
     float2( PLAYING_HALF_WIDTH, -PLAYING_HALF_LENGTH)
 };
 
 constant float2 SIDE_POCKET_CENTERS[2] = {
-    float2(-PLAYING_HALF_WIDTH - RAIL_BACK_DEPTH, 0.0), 
+    float2(-PLAYING_HALF_WIDTH - RAIL_BACK_DEPTH, 0.0),
     float2( PLAYING_HALF_WIDTH + RAIL_BACK_DEPTH, 0.0)
+};
+
+// Jaw parameters
+constant float JAW_MAJOR_RADIUS = 0.8;
+constant float JAW_MINOR_RADIUS = 0.4;
+constant float JAW_LENGTH = 1.5;
+constant float JAW_THICKNESS = 0.35;
+
+// Jaw offset constants for positioning
+constant float JAW_OFFSET_DISTANCE = 1.2;
+constant float CORNER_JAW_OFFSET_ANGLES[4] = {
+    3*PI/4,  // Top-left: inward diagonal (opposite side)
+    5*PI/4,  // Top-right: inward diagonal
+    PI/4,    // Bottom-left: inward diagonal
+    -PI/4    // Bottom-right: inward diagonal
+};
+constant float SIDE_JAW_OFFSET_ANGLES[2] = {
+    PI,      // Left: inward along -x
+    0.0      // Right: inward along +x
+};
+constant float JAW_ANGLES[6] = {
+    -PI/4,   // Top-left: outward
+    3*PI/4,  // Top-right: outward
+    3*PI/4,  // Bottom-left: outward
+    5*PI/4,  // Bottom-right: outward
+    0.0,     // Left: outward toward -x
+    PI       // Right: outward toward +x
 };
 
 // -------------------------------------
@@ -88,13 +113,11 @@ float3 hsvToRgb(float3 c) {
     return c.z * mix(float3(1.0), clamp(p - 1.0, 0.0, 1.0), c.y);
 }
 
-// Box SDF - centered at origin
 float prBoxDf(float3 p, float3 b) {
     float3 q = abs(p) - b;
     return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);
 }
 
-// Cylinder SDF - centered at origin, aligned with Y axis
 float sdCylinder(float3 p, float r, float h) {
     float2 d = abs(float2(length(p.xz), p.y)) - float2(r, h);
     return min(max(d.x, d.y), 0.0) + length(max(d, 0.0));
@@ -129,6 +152,11 @@ float3x3 qtToRMat(float4 q) {
     return 2.0 * m;
 }
 
+float smoothMin(float a, float b, float k) {
+    float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
+    return mix(b, a, h) - k * h * (1.0 - h);
+}
+
 // -------------------------------------
 //   2) Ball Intersection
 // -------------------------------------
@@ -151,7 +179,7 @@ void ballHit(float3 ro, float3 rd, thread float &dist, thread float3 &normal,
     normal = float3(0.0);
     id = -1;
     for (int n = 0; n < nBall; n++) {
-        float ballCenterY = balls[n].height + BALL_RADIUS; // No -0.6 offset, height is relative to y=0
+        float ballCenterY = balls[n].height + BALL_RADIUS;
         float3 ballPos = float3(balls[n].position.x, ballCenterY, balls[n].position.y);
         if (isinf(balls[n].velocity.x)) continue;
         float3 u = ro - ballPos;
@@ -193,7 +221,7 @@ float sdK55Profile(float2 p) {
 }
 
 float sdRailSegment(float3 p, float rail_start, float rail_end, float rail_axis_pos, int axis) {
-    float3 p_relative = p - float3(0.0, FELT_HEIGHT, 0.0); // Offset rails to start at FELT_HEIGHT
+    float3 p_relative = p - float3(0.0, FELT_HEIGHT, 0.0);
     float rail_coord, depth_coord_signed, height_coord;
     float half_length = abs(rail_end - rail_start) / 2.0;
     float mid_point = (rail_start + rail_end) / 2.0;
@@ -213,19 +241,40 @@ float sdRailSegment(float3 p, float rail_start, float rail_end, float rail_axis_
     }
 }
 
+float sdPocketJaw(float3 p, float2 center, float angle, float major_radius, float minor_radius, float jaw_length) {
+    float2 offset = float2(0.0, 0.0);
+    float3 p_local = p - float3(center.x + offset.x, FELT_HEIGHT, center.y + offset.y);
+    p_local = rotateY(p_local, angle);
+
+    float2 q = p_local.xz;
+    float theta = atan2(q.y, q.x);
+    float2 ellipse = float2(major_radius * cos(theta), minor_radius * sin(theta));
+    float dist_to_ellipse = length(q - ellipse);
+
+    float angle_range = jaw_length / major_radius;
+    float theta_normalized = abs(theta) / (angle_range * 0.5);
+    float length_dist = smoothstep(0.9, 1.0, theta_normalized) * dist_to_ellipse;
+
+    float radial_dist = dist_to_ellipse - JAW_THICKNESS;
+    float profile_dist = sdK55Profile(float2(radial_dist, p_local.y));
+
+    return max(profile_dist, length_dist);
+}
+
 float sdPocket(float3 p, float2 center, float radius) {
-    float d = length(p.xz - center) - radius;
-    return d;
+    float3 p_local = p - float3(center.x, FELT_HEIGHT - 0.3, center.y);
+    float r = radius * (1.0 - 0.2 * (p_local.y / 0.5));
+    float d = sdCylinder(p_local, r, 0.5);
+    return d - 0.1;
 }
 
 // -------------------------------------
 //   4) Scene Mapping & Normals
 // -------------------------------------
 float map(float3 p, thread float& hitType, thread float& pocketDist) {
-    hitType = 0.0; // 0=miss, 1=felt, 2=rail, 3=pocket_hole
+    hitType = 0.0;
     pocketDist = 1000.0;
 
-    // Bounding Sphere
     float sceneRadius = max(TABLE_HALF_WIDTH, TABLE_HALF_LENGTH) + 2.0;
     float boundsDist = length(p.xz) - sceneRadius;
     boundsDist = max(boundsDist, abs(p.y) - 5.0);
@@ -234,29 +283,44 @@ float map(float3 p, thread float& hitType, thread float& pocketDist) {
         return boundsDist;
     }
 
-    // Felt SDF - Top surface at FELT_HEIGHT
     float felt_thickness = 0.01;
-    float felt_center_y = FELT_HEIGHT - felt_thickness; // Center below top surface
-    float dFelt = prBoxDf(p - float3(0.0, felt_center_y, 0.0), 
+    float felt_center_y = FELT_HEIGHT - felt_thickness;
+    float dFelt = prBoxDf(p - float3(0.0, felt_center_y, 0.0),
                          float3(PLAYING_HALF_WIDTH, felt_thickness, PLAYING_HALF_LENGTH));
 
-    // Rail Segment SDFs
-    float dHeadRail = sdRailSegment(p, -RAIL_LENGTH_X, RAIL_LENGTH_X, PLAYING_HALF_LENGTH, 0);
-    float dFootRail = sdRailSegment(p, -RAIL_LENGTH_X, RAIL_LENGTH_X, -PLAYING_HALF_LENGTH, 0);
-    float dLeftRailFar = sdRailSegment(p, SIDE_RAIL_NEAR_Z_END, SIDE_RAIL_FAR_Z_END - CORNER_POCKET_R, 
+    float jaw_offset = JAW_MAJOR_RADIUS * 0.8;
+    float dHeadRail = sdRailSegment(p, -RAIL_LENGTH_X + jaw_offset, RAIL_LENGTH_X - jaw_offset,
+                                   PLAYING_HALF_LENGTH, 0);
+    float dFootRail = sdRailSegment(p, -RAIL_LENGTH_X + jaw_offset, RAIL_LENGTH_X - jaw_offset,
+                                   -PLAYING_HALF_LENGTH, 0);
+    float dLeftRailFar = sdRailSegment(p, SIDE_RAIL_NEAR_Z_END, SIDE_RAIL_FAR_Z_END - CORNER_POCKET_R - jaw_offset,
                                       -PLAYING_HALF_WIDTH, 1);
-    float dLeftRailNear = sdRailSegment(p, -SIDE_RAIL_FAR_Z_END + CORNER_POCKET_R, -SIDE_RAIL_NEAR_Z_END, 
+    float dLeftRailNear = sdRailSegment(p, -SIDE_RAIL_FAR_Z_END + CORNER_POCKET_R + jaw_offset, -SIDE_RAIL_NEAR_Z_END,
                                        -PLAYING_HALF_WIDTH, 1);
     float dLeftRail = min(dLeftRailFar, dLeftRailNear);
-    float dRightRailFar = sdRailSegment(p, SIDE_RAIL_NEAR_Z_END, SIDE_RAIL_FAR_Z_END - CORNER_POCKET_R, 
+    float dRightRailFar = sdRailSegment(p, SIDE_RAIL_NEAR_Z_END, SIDE_RAIL_FAR_Z_END - CORNER_POCKET_R - jaw_offset,
                                        PLAYING_HALF_WIDTH, 1);
-    float dRightRailNear = sdRailSegment(p, -SIDE_RAIL_FAR_Z_END + CORNER_POCKET_R, -SIDE_RAIL_NEAR_Z_END, 
+    float dRightRailNear = sdRailSegment(p, -SIDE_RAIL_FAR_Z_END + CORNER_POCKET_R + jaw_offset, -SIDE_RAIL_NEAR_Z_END,
                                         PLAYING_HALF_WIDTH, 1);
     float dRightRail = min(dRightRailFar, dRightRailNear);
 
     float dRails = min(min(dHeadRail, dFootRail), min(dLeftRail, dRightRail));
 
-    // Pocket SDFs
+    float2 jawCenters[6];
+    jawCenters[0] = CORNER_POCKET_CENTERS[0] + float2(cos(CORNER_JAW_OFFSET_ANGLES[0]), sin(CORNER_JAW_OFFSET_ANGLES[0])) * JAW_OFFSET_DISTANCE;
+    jawCenters[1] = CORNER_POCKET_CENTERS[1] + float2(cos(CORNER_JAW_OFFSET_ANGLES[1]), sin(CORNER_JAW_OFFSET_ANGLES[1])) * JAW_OFFSET_DISTANCE;
+    jawCenters[2] = CORNER_POCKET_CENTERS[2] + float2(cos(CORNER_JAW_OFFSET_ANGLES[2]), sin(CORNER_JAW_OFFSET_ANGLES[2])) * JAW_OFFSET_DISTANCE;
+    jawCenters[3] = CORNER_POCKET_CENTERS[3] + float2(cos(CORNER_JAW_OFFSET_ANGLES[3]), sin(CORNER_JAW_OFFSET_ANGLES[3])) * JAW_OFFSET_DISTANCE;
+    jawCenters[4] = SIDE_POCKET_CENTERS[0] + float2(cos(SIDE_JAW_OFFSET_ANGLES[0]), sin(SIDE_JAW_OFFSET_ANGLES[0])) * JAW_OFFSET_DISTANCE;
+    jawCenters[5] = SIDE_POCKET_CENTERS[1] + float2(cos(SIDE_JAW_OFFSET_ANGLES[1]), sin(SIDE_JAW_OFFSET_ANGLES[1])) * JAW_OFFSET_DISTANCE;
+
+    float dJaws = 1000.0;
+    for (int i = 0; i < 6; ++i) {
+        dJaws = min(dJaws, sdPocketJaw(p, jawCenters[i], JAW_ANGLES[i], JAW_MAJOR_RADIUS, JAW_MINOR_RADIUS, JAW_LENGTH));
+    }
+
+    float dRailJaws = min(dRails, dJaws);
+
     float dPocketCorners = 1000.0;
     for (int i = 0; i < 4; ++i) {
         dPocketCorners = min(dPocketCorners, sdPocket(p, CORNER_POCKET_CENTERS[i], CORNER_POCKET_R));
@@ -265,26 +329,22 @@ float map(float3 p, thread float& hitType, thread float& pocketDist) {
     for (int i = 0; i < 2; ++i) {
         dPocketSides = min(dPocketSides, sdPocket(p, SIDE_POCKET_CENTERS[i], SIDE_POCKET_R));
     }
-    float dPocketsXZ = min(dPocketCorners, dPocketSides);
-    pocketDist = dPocketsXZ;
+    float dPockets = min(dPocketCorners, dPocketSides);
+    pocketDist = dPockets;
 
-    // Combine felt and rails
-    float dSolid = min(dFelt, dRails);
+    float dSolid = min(dFelt, dRailJaws);
 
-    // Pocket logic
-    if (dPocketsXZ < 0.01 && p.y < FELT_HEIGHT) {
-        hitType = 3.0; // Inside pocket
-        return dSolid; // Return distance to nearest solid surface
+    if (dPockets < 0.01 && p.y < FELT_HEIGHT) {
+        hitType = 3.0;
+        return dSolid;
     }
 
-    // Otherwise, return standard distance
-    float d = max(dSolid, -dPocketsXZ);
+    float d = max(dSolid, -dPockets);
 
-    // Determine hit type
     if (dSolid == dFelt) {
-        hitType = 1.0; // Felt
-    } else if (dRails < dFelt) {
-        hitType = 2.0; // Rail
+        hitType = 1.0;
+    } else if (dRailJaws < dFelt) {
+        hitType = 2.0;
     }
 
     return d;
@@ -294,7 +354,7 @@ float3 getNormal(float3 p, thread float& hitType, thread float& pocketDist) {
     float2 e = float2(0.0005, 0.0);
     float ht_ignore, pd_ignore;
     if (hitType == 3.0) {
-        return float3(0.0, -1.0, 0.0); // Dummy normal for pocket
+        return float3(0.0, -1.0, 0.0);
     }
     return normalize(float3(
         map(p + e.xyy, ht_ignore, pd_ignore) - map(p - e.xyy, ht_ignore, pd_ignore),
@@ -353,7 +413,6 @@ float3 showScene(float3 ro, float3 rd,
         float dEnv = map(p, mapHitType, mapPocketDist);
 
         if (mapHitType == 3.0) {
-            // Inside pocket: only check cue stick collision, treat as empty space
             float d = dCueStick;
             if (d < 0.0005 || t > dstBall) {
                 if (dstBall <= t + 0.001 && dstBall < maxDist) {
@@ -368,10 +427,9 @@ float3 showScene(float3 ro, float3 rd,
                 }
                 break;
             }
-            t += max(0.01, 0.001); // Modified step inside pocket
+            t += max(0.01, 0.001);
             if (t > maxDist) break;
         } else {
-            // Standard collision check
             float d = min(dEnv, dCueStick);
             if (d < 0.0005 || t > dstBall) {
                 if (dstBall <= t + 0.001 && dstBall < maxDist) {
@@ -450,7 +508,7 @@ float3 showScene(float3 ro, float3 rd,
                 }
                 float3x3 rotMat = qtToRMat(balls[id].quaternion);
                 float3 rotatedNormal = rotMat * n;
-                float2 uv = float2(atan2(rotatedNormal.x, rotatedNormal.z) / (2.0 * PI) + 0.5, 
+                float2 uv = float2(atan2(rotatedNormal.x, rotatedNormal.z) / (2.0 * PI) + 0.5,
                                  acos(rotatedNormal.y) / PI);
                 if (isStriped && id != 8) {
                     float stripeWidth = 0.3;
@@ -473,11 +531,11 @@ float3 showScene(float3 ro, float3 rd,
         } else if (hitType == 5.0) {
             float3 eps = float3(0.0005, 0.0, 0.0);
             n = normalize(float3(
-                prRoundCylDf(cueHitPos + eps.xyy, 0.1, 0.05, CUE_LENGTH) - 
+                prRoundCylDf(cueHitPos + eps.xyy, 0.1, 0.05, CUE_LENGTH) -
                 prRoundCylDf(cueHitPos - eps.xyy, 0.1, 0.05, CUE_LENGTH),
-                prRoundCylDf(cueHitPos + eps.yxy, 0.1, 0.05, CUE_LENGTH) - 
+                prRoundCylDf(cueHitPos + eps.yxy, 0.1, 0.05, CUE_LENGTH) -
                 prRoundCylDf(cueHitPos - eps.yxy, 0.1, 0.05, CUE_LENGTH),
-                prRoundCylDf(cueHitPos + eps.yyx, 0.1, 0.05, CUE_LENGTH) - 
+                prRoundCylDf(cueHitPos + eps.yyx, 0.1, 0.05, CUE_LENGTH) -
                 prRoundCylDf(cueHitPos - eps.yyx, 0.1, 0.05, CUE_LENGTH)
             ));
             col = (cueHitPos.z < 2.2) ? float3(0.5, 0.3, 0.0) : float3(0.7, 0.7, 0.3);
@@ -496,9 +554,9 @@ float3 showScene(float3 ro, float3 rd,
 //   6) Vertex & Fragment Shaders
 // -------------------------------------
 vertex VertexOut vertexShader(uint vertexID [[vertex_id]]) {
-    constexpr float2 positions[4] = { float2(-1.0, -1.0), float2(1.0, -1.0), 
+    constexpr float2 positions[4] = { float2(-1.0, -1.0), float2(1.0, -1.0),
                                      float2(-1.0, 1.0), float2(1.0, 1.0) };
-    constexpr float2 uvs[4] = { float2(0.0, 0.0), float2(1.0, 0.0), 
+    constexpr float2 uvs[4] = { float2(0.0, 0.0), float2(1.0, 0.0),
                                float2(0.0, 1.0), float2(1.0, 1.0) };
     VertexOut out;
     out.position = float4(positions[vertexID], 0.0, 1.0);
@@ -519,13 +577,13 @@ fragment float4 fragmentShader(VertexOut in [[stage_in]],
     uv.x *= resolution.x / resolution.y;
     float angle = time * 0.1;
     float3 camPos = float3(sin(angle) * 25.0, 12.0, cos(angle) * 25.0);
-    float3 camTarget = float3(0.0, FELT_HEIGHT, 0.0); // Center on felt surface
+    float3 camTarget = float3(0.0, FELT_HEIGHT, 0.0);
     float3 ww = normalize(camTarget - camPos);
     float3 uu = normalize(cross(float3(0.0, 1.0, 0.0), ww));
     float3 vv = normalize(cross(ww, uu));
     const float fov = 0.7;
     float3 rd = normalize(ww + uu * uv.x * fov + vv * uv.y * fov);
-    float3 col = showScene(camPos, rd, time, cueOffset, cueTipOffset, balls, 
+    float3 col = showScene(camPos, rd, time, cueOffset, cueTipOffset, balls,
                           cueVisible, cueAngle, cue3DRotate);
     return float4(col, 1.0);
 }
@@ -550,7 +608,7 @@ fragment float4 behindBallFragmentShader(VertexOut in [[stage_in]],
     const float fov = 0.8;
     float3 rd = normalize(ww + uu * uv.x * fov + vv * uv.y * fov);
     float timeDummy = 0.0;
-    float3 col = showScene(ro, rd, timeDummy, cueOffset, cueTipOffset, balls, 
+    float3 col = showScene(ro, rd, timeDummy, cueOffset, cueTipOffset, balls,
                           cueVisible, cueAngle, cue3DRotate);
     return float4(col, 1.0);
 }
@@ -575,7 +633,7 @@ fragment float4 thirdBallFragmentShader(VertexOut in [[stage_in]],
     const float fov = 0.8;
     float3 rd = normalize(ww + uu * uv.x * fov + vv * uv.y * fov);
     float timeDummy = 0.0;
-    float3 col = showScene(ro, rd, timeDummy, cueOffset, cueTipOffset, balls, 
+    float3 col = showScene(ro, rd, timeDummy, cueOffset, cueTipOffset, balls,
                           cueVisible, cueAngle, cue3DRotate);
     return float4(col, 1.0);
 }
