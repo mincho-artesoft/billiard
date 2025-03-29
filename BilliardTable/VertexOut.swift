@@ -353,7 +353,7 @@ float3 showScene(float3 ro, float3 rd,
     float pocketDistAtHit = 1000.0;
     float3 cueHitPos;
 
-    for (int i = 0; i < 120; i++) { // Increased iterations for better quality
+    for (int i = 0; i < 80; i++) { // Reduced iterations for better performance
         float3 p = ro + rd * t;
         float dCueStick = maxDist;
         if (cueVisible != 0 && !isinf(balls[0].velocity.x)) {
@@ -547,14 +547,15 @@ fragment float4 fragmentShader(VertexOut in [[stage_in]],
 
 fragment float4 behindBallFragmentShader(VertexOut in [[stage_in]],
                                          constant float2 &resolution   [[buffer(0)]],
-                                         constant float3 &cameraPos    [[buffer(1)]],
-                                         constant float3 &cameraTarget [[buffer(2)]],
-                                         constant Ball*  balls         [[buffer(3)]],
-                                         constant float  &cueOffset    [[buffer(4)]],
-                                         constant int    &cueVisible   [[buffer(5)]],
-                                         constant float2 &cueTipOffset [[buffer(6)]],
-                                         constant float  &cueAngle     [[buffer(7)]],
-                                         constant float2 &cue3DRotate  [[buffer(8)]]) {
+                                         constant float &time          [[buffer(1)]],
+                                         constant float3 &cameraPos    [[buffer(2)]],
+                                         constant float3 &cameraTarget [[buffer(3)]],
+                                         constant Ball*  balls         [[buffer(4)]],
+                                         constant float  &cueOffset    [[buffer(5)]],
+                                         constant int    &cueVisible   [[buffer(6)]],
+                                         constant float2 &cueTipOffset [[buffer(7)]],
+                                         constant float  &cueAngle     [[buffer(8)]],
+                                         constant float2 &cue3DRotate  [[buffer(9)]]) {
     float2 uv = 2.0 * in.uv - 1.0;
     uv.x *= resolution.x / resolution.y;
     float3 ro = cameraPos;
@@ -564,22 +565,22 @@ fragment float4 behindBallFragmentShader(VertexOut in [[stage_in]],
     float3 vv = normalize(cross(ww, uu));
     const float fov = 0.8;
     float3 rd = normalize(ww + uu * uv.x * fov + vv * uv.y * fov);
-    float timeDummy = 0.0;
-    float3 col = showScene(ro, rd, timeDummy, cueOffset, cueTipOffset, balls, 
+    float3 col = showScene(ro, rd, time, cueOffset, cueTipOffset, balls, 
                           cueVisible, cueAngle, cue3DRotate);
     return float4(col, 1.0);
 }
 
 fragment float4 thirdBallFragmentShader(VertexOut in [[stage_in]],
                                         constant float2 &resolution   [[buffer(0)]],
-                                        constant float3 &cameraPos    [[buffer(1)]],
-                                        constant float3 &cameraTarget [[buffer(2)]],
-                                        constant Ball*  balls         [[buffer(3)]],
-                                        constant float  &cueOffset    [[buffer(4)]],
-                                        constant int    &cueVisible   [[buffer(5)]],
-                                        constant float2 &cueTipOffset [[buffer(6)]],
-                                        constant float  &cueAngle     [[buffer(7)]],
-                                        constant float2 &cue3DRotate  [[buffer(8)]]) {
+                                        constant float &time          [[buffer(1)]],
+                                        constant float3 &cameraPos    [[buffer(2)]],
+                                        constant float3 &cameraTarget [[buffer(3)]],
+                                        constant Ball*  balls         [[buffer(4)]],
+                                        constant float  &cueOffset    [[buffer(5)]],
+                                        constant int    &cueVisible   [[buffer(6)]],
+                                        constant float2 &cueTipOffset [[buffer(7)]],
+                                        constant float  &cueAngle     [[buffer(8)]],
+                                        constant float2 &cue3DRotate  [[buffer(9)]]) {
     float2 uv = 2.0 * in.uv - 1.0;
     uv.x *= resolution.x / resolution.y;
     float3 ro = cameraPos;
@@ -589,8 +590,7 @@ fragment float4 thirdBallFragmentShader(VertexOut in [[stage_in]],
     float3 vv = normalize(cross(ww, uu));
     const float fov = 0.8;
     float3 rd = normalize(ww + uu * uv.x * fov + vv * uv.y * fov);
-    float timeDummy = 0.0;
-    float3 col = showScene(ro, rd, timeDummy, cueOffset, cueTipOffset, balls, 
+    float3 col = showScene(ro, rd, time, cueOffset, cueTipOffset, balls, 
                           cueVisible, cueAngle, cue3DRotate);
     return float4(col, 1.0);
 }
@@ -747,26 +747,26 @@ final class BilliardSimulation: ObservableObject {
         self.balls = [
             // Cue ball (index 0) at head spot
             BallData(position: SIMD2<Float>(0.0, headSpotZ), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
-            // Row 1 (1 ball, apex)
-            BallData(position: SIMD2<Float>(0.0, footSpotZ + 2.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 1-ball (yellow, solid)
+            // Row 1 (1 ball, apex) - 1-ball (yellow, solid)
+            BallData(position: SIMD2<Float>(0.0, footSpotZ), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat),
             // Row 2 (2 balls)
             BallData(position: SIMD2<Float>(-d / 2.0, footSpotZ + rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 2-ball (blue, solid)
             BallData(position: SIMD2<Float>(d / 2.0, footSpotZ + rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 9-ball (yellow, striped)
             // Row 3 (3 balls, 8-ball in the center)
-            BallData(position: SIMD2<Float>(-d, footSpotZ), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 3-ball (red, solid)
-            BallData(position: SIMD2<Float>(0.0, footSpotZ), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 8-ball (black)
-            BallData(position: SIMD2<Float>(d, footSpotZ), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 10-ball (blue, striped)
+            BallData(position: SIMD2<Float>(-d, footSpotZ + 2.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 3-ball (red, solid)
+            BallData(position: SIMD2<Float>(0.0, footSpotZ + 2.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 8-ball (black)
+            BallData(position: SIMD2<Float>(d, footSpotZ + 2.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 10-ball (blue, striped)
             // Row 4 (4 balls)
-            BallData(position: SIMD2<Float>(-1.5 * d, footSpotZ - rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 4-ball (purple, solid)
-            BallData(position: SIMD2<Float>(-0.5 * d, footSpotZ - rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 11-ball (red, striped)
-            BallData(position: SIMD2<Float>(0.5 * d, footSpotZ - rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 12-ball (purple, striped)
-            BallData(position: SIMD2<Float>(1.5 * d, footSpotZ - rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 5-ball (orange, solid)
+            BallData(position: SIMD2<Float>(-1.5 * d, footSpotZ + 3.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 4-ball (purple, solid)
+            BallData(position: SIMD2<Float>(-0.5 * d, footSpotZ + 3.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 11-ball (red, striped)
+            BallData(position: SIMD2<Float>(0.5 * d, footSpotZ + 3.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 12-ball (purple, striped)
+            BallData(position: SIMD2<Float>(1.5 * d, footSpotZ + 3.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 5-ball (orange, solid)
             // Row 5 (5 balls)
-            BallData(position: SIMD2<Float>(-2.0 * d, footSpotZ - 2.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 6-ball (green, solid)
-            BallData(position: SIMD2<Float>(-1.0 * d, footSpotZ - 2.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 13-ball (orange, striped)
-            BallData(position: SIMD2<Float>(0.0, footSpotZ - 2.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 7-ball (maroon, solid)
-            BallData(position: SIMD2<Float>(1.0 * d, footSpotZ - 2.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 14-ball (green, striped)
-            BallData(position: SIMD2<Float>(2.0 * d, footSpotZ - 2.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat) // 15-ball (maroon, striped)
+            BallData(position: SIMD2<Float>(-2.0 * d, footSpotZ + 4.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 6-ball (green, solid)
+            BallData(position: SIMD2<Float>(-1.0 * d, footSpotZ + 4.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 13-ball (orange, striped)
+            BallData(position: SIMD2<Float>(0.0, footSpotZ + 4.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 7-ball (maroon, solid)
+            BallData(position: SIMD2<Float>(1.0 * d, footSpotZ + 4.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat), // 14-ball (green, striped)
+            BallData(position: SIMD2<Float>(2.0 * d, footSpotZ + 4.0 * rowSpacing), velocity: .zero, angularVelocity: .zero, quaternion: identityQuat) // 15-ball (maroon, striped)
         ]
 
         var ballShaderData = [BallShaderData](
@@ -1130,28 +1130,32 @@ final class BilliardSimulation: ObservableObject {
 
         encoder.setFragmentBytes(&resolution, length: MemoryLayout<SIMD2<Float>>.stride, index: 0)
 
+        let timePtr = orbitUniformsBuffer.contents().bindMemory(to: Float.self, capacity: 1)
+        timePtr[0] = self.time
+        encoder.setFragmentBuffer(orbitUniformsBuffer, offset: 0, index: 1)
+
         behindCamPosBuffer.contents().bindMemory(to: SIMD3<Float>.self, capacity: 1)[0] = cameraPosition
-        encoder.setFragmentBuffer(behindCamPosBuffer, offset: 0, index: 1)
+        encoder.setFragmentBuffer(behindCamPosBuffer, offset: 0, index: 2)
 
         behindCamTargetBuffer.contents().bindMemory(to: SIMD3<Float>.self, capacity: 1)[0] = cameraTarget
-        encoder.setFragmentBuffer(behindCamTargetBuffer, offset: 0, index: 2)
+        encoder.setFragmentBuffer(behindCamTargetBuffer, offset: 0, index: 3)
 
-        encoder.setFragmentBuffer(ballBuffer, offset: 0, index: 3)
+        encoder.setFragmentBuffer(ballBuffer, offset: 0, index: 4)
 
         cueOffsetBuffer.contents().bindMemory(to: Float.self, capacity: 1)[0] = cueOffset
-        encoder.setFragmentBuffer(cueOffsetBuffer, offset: 0, index: 4)
+        encoder.setFragmentBuffer(cueOffsetBuffer, offset: 0, index: 5)
 
         showCueBuffer.contents().bindMemory(to: Int32.self, capacity: 1)[0] = showCueValue
-        encoder.setFragmentBuffer(showCueBuffer, offset: 0, index: 5)
+        encoder.setFragmentBuffer(showCueBuffer, offset: 0, index: 6)
 
         cueTipOffsetBuffer.contents().bindMemory(to: SIMD2<Float>.self, capacity: 1)[0] = cueTipOffset
-        encoder.setFragmentBuffer(cueTipOffsetBuffer, offset: 0, index: 6)
+        encoder.setFragmentBuffer(cueTipOffsetBuffer, offset: 0, index: 7)
 
         cueAngleBuffer.contents().bindMemory(to: Float.self, capacity: 1)[0] = cueAngle
-        encoder.setFragmentBuffer(cueAngleBuffer, offset: 0, index: 7)
+        encoder.setFragmentBuffer(cueAngleBuffer, offset: 0, index: 8)
 
         cue3DRotateBuffer.contents().bindMemory(to: SIMD2<Float>.self, capacity: 1)[0] = cue3DRotate
-        encoder.setFragmentBuffer(cue3DRotateBuffer, offset: 0, index: 8)
+        encoder.setFragmentBuffer(cue3DRotateBuffer, offset: 0, index: 9)
 
         encoder.setRenderPipelineState(behindPipeline)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
@@ -1183,34 +1187,37 @@ final class BilliardSimulation: ObservableObject {
 
         encoder.setFragmentBytes(&resolution, length: MemoryLayout<SIMD2<Float>>.stride, index: 0)
 
+        let timePtr = orbitUniformsBuffer.contents().bindMemory(to: Float.self, capacity: 1)
+        timePtr[0] = self.time
+        encoder.setFragmentBuffer(orbitUniformsBuffer, offset: 0, index: 1)
+
         thirdCamPosBuffer.contents().bindMemory(to: SIMD3<Float>.self, capacity: 1)[0] = cameraPosition
-        encoder.setFragmentBuffer(thirdCamPosBuffer, offset: 0, index: 1)
+        encoder.setFragmentBuffer(thirdCamPosBuffer, offset: 0, index: 2)
 
         thirdCamTargetBuffer.contents().bindMemory(to: SIMD3<Float>.self, capacity: 1)[0] = cameraTarget
-        encoder.setFragmentBuffer(thirdCamTargetBuffer, offset: 0, index: 2)
+        encoder.setFragmentBuffer(thirdCamTargetBuffer, offset: 0, index: 3)
 
-        encoder.setFragmentBuffer(ballBuffer, offset: 0, index: 3)
+        encoder.setFragmentBuffer(ballBuffer, offset: 0, index: 4)
 
         cueOffsetBuffer.contents().bindMemory(to: Float.self, capacity: 1)[0] = cueOffset
-        encoder.setFragmentBuffer(cueOffsetBuffer, offset: 0, index: 4)
+        encoder.setFragmentBuffer(cueOffsetBuffer, offset: 0, index: 5)
 
         showCueBuffer.contents().bindMemory(to: Int32.self, capacity: 1)[0] = showCueValue
-        encoder.setFragmentBuffer(showCueBuffer, offset: 0, index: 5)
+        encoder.setFragmentBuffer(showCueBuffer, offset: 0, index: 6)
 
         cueTipOffsetBuffer.contents().bindMemory(to: SIMD2<Float>.self, capacity: 1)[0] = cueTipOffset
-        encoder.setFragmentBuffer(cueTipOffsetBuffer, offset: 0, index: 6)
+        encoder.setFragmentBuffer(cueTipOffsetBuffer, offset: 0, index: 7)
 
         cueAngleBuffer.contents().bindMemory(to: Float.self, capacity: 1)[0] = cueAngle
-        encoder.setFragmentBuffer(cueAngleBuffer, offset: 0, index: 7)
+        encoder.setFragmentBuffer(cueAngleBuffer, offset: 0, index: 8)
 
         cue3DRotateBuffer.contents().bindMemory(to: SIMD2<Float>.self, capacity: 1)[0] = cue3DRotate
-        encoder.setFragmentBuffer(cue3DRotateBuffer, offset: 0, index: 8)
+        encoder.setFragmentBuffer(cue3DRotateBuffer, offset: 0, index: 9)
 
         encoder.setRenderPipelineState(thirdPipeline)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
     }
 }
-
 // MARK: - SwiftUI Views
 struct OrbitingMetalView: UIViewRepresentable {
     @ObservedObject var simulation: BilliardSimulation
