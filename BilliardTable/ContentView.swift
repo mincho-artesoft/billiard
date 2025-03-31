@@ -501,12 +501,44 @@ float3 showScene(float3 ro, float3 rd,
                 } else {
                     col = baseColor;
                 }
-                float2 circleCenter = float2(0.5, 0.5);
-                float circleRadius = 0.2;
-                float distToCenter = length(uv - circleCenter);
-                if (distToCenter < circleRadius && id != 0) {
-                    col = float3(1.0);
-                }
+                        // Correct label positioning and sizing
+                        float2 circleCenter = float2(0.5, 0.35);
+                        float circleRadius = 0.14;
+                        float distToCenter = length(uv - circleCenter);
+
+                        if (id > 0) {
+                            // White background circle
+                            if (distToCenter < circleRadius) {
+                                col = float3(1.0);
+                            }
+
+                            // Render pseudo-digit (bigger, sharper)
+                            if (distToCenter < circleRadius * 0.95) {
+                                float dotSize = 0.035;
+                                float digitMask = smoothstep(dotSize, dotSize * 0.8, distToCenter);
+                                col = mix(col, float3(0.05), digitMask);
+                            }
+
+                            // Mirror for backside label
+                            float2 backUV = float2(1.0 - uv.x, uv.y);
+                            float2 backCenter = float2(0.5, 0.65);
+                            float backDist = length(backUV - backCenter);
+
+                            if (backDist < circleRadius) {
+                                col = float3(1.0);
+                            }
+                            if (backDist < circleRadius * 0.95) {
+                                float dotSize = 0.035;
+                                float digitMask = smoothstep(dotSize, dotSize * 0.8, backDist);
+                                col = mix(col, float3(0.05), digitMask);
+                            }
+                        }
+
+                        // Improved stripe design
+                        if (isStriped && id != 8) {
+                            float stripeBand = smoothstep(0.4, 0.5, abs(uv.y - 0.5));
+                            col = mix(baseColor, float3(1.0), stripeBand);
+                        }
             }
             float diff = max(dot(n, lightDir), 0.0);
             col *= (ambient + (1.0 - ambient) * diff);
