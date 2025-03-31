@@ -18,10 +18,10 @@ class SoundManager {
                 player.play()
                 players[name] = player
             } catch {
-                print("Failed to play \\(name): \\(error)")
+                print("Failed to play \(name): \(error)")
             }
         } else {
-            print("⚠️ Sound \\(name).wav not found in bundle.")
+            print("⚠️ Sound \(name).wav not found in bundle.")
         }
     }
 }
@@ -67,14 +67,14 @@ constant float SIDE_RAIL_FAR_Z_END  = PLAYING_HALF_LENGTH;
 
 // Pocket Center Locations
 constant float2 CORNER_POCKET_CENTERS[4] = {
-    float2(-PLAYING_HALF_WIDTH,  PLAYING_HALF_LENGTH), 
+    float2(-PLAYING_HALF_WIDTH,  PLAYING_HALF_LENGTH),
     float2( PLAYING_HALF_WIDTH,  PLAYING_HALF_LENGTH),
-    float2(-PLAYING_HALF_WIDTH, -PLAYING_HALF_LENGTH), 
+    float2(-PLAYING_HALF_WIDTH, -PLAYING_HALF_LENGTH),
     float2( PLAYING_HALF_WIDTH, -PLAYING_HALF_LENGTH)
 };
 
 constant float2 SIDE_POCKET_CENTERS[2] = {
-    float2(-PLAYING_HALF_WIDTH - RAIL_BACK_DEPTH, 0.0), 
+    float2(-PLAYING_HALF_WIDTH - RAIL_BACK_DEPTH, 0.0),
     float2( PLAYING_HALF_WIDTH + RAIL_BACK_DEPTH, 0.0)
 };
 
@@ -292,19 +292,19 @@ float map(float3 p, thread float& hitType, thread float& pocketDist) {
 
     float felt_thickness = 0.01;
     float felt_center_y = FELT_HEIGHT - felt_thickness;
-    float dFelt = prBoxDf(p - float3(0.0, felt_center_y, 0.0), 
+    float dFelt = prBoxDf(p - float3(0.0, felt_center_y, 0.0),
                          float3(PLAYING_HALF_WIDTH, felt_thickness, PLAYING_HALF_LENGTH));
 
     float dHeadRail = sdRailSegment(p, -RAIL_LENGTH_X, RAIL_LENGTH_X, PLAYING_HALF_LENGTH, 0);
     float dFootRail = sdRailSegment(p, -RAIL_LENGTH_X, RAIL_LENGTH_X, -PLAYING_HALF_LENGTH, 0);
-    float dLeftRailFar = sdRailSegment(p, SIDE_RAIL_NEAR_Z_END, SIDE_RAIL_FAR_Z_END - CORNER_POCKET_R, 
+    float dLeftRailFar = sdRailSegment(p, SIDE_RAIL_NEAR_Z_END, SIDE_RAIL_FAR_Z_END - CORNER_POCKET_R,
                                       -PLAYING_HALF_WIDTH, 1);
-    float dLeftRailNear = sdRailSegment(p, -SIDE_RAIL_FAR_Z_END + CORNER_POCKET_R, -SIDE_RAIL_NEAR_Z_END, 
+    float dLeftRailNear = sdRailSegment(p, -SIDE_RAIL_FAR_Z_END + CORNER_POCKET_R, -SIDE_RAIL_NEAR_Z_END,
                                        -PLAYING_HALF_WIDTH, 1);
     float dLeftRail = min(dLeftRailFar, dLeftRailNear);
-    float dRightRailFar = sdRailSegment(p, SIDE_RAIL_NEAR_Z_END, SIDE_RAIL_FAR_Z_END - CORNER_POCKET_R, 
+    float dRightRailFar = sdRailSegment(p, SIDE_RAIL_NEAR_Z_END, SIDE_RAIL_FAR_Z_END - CORNER_POCKET_R,
                                        PLAYING_HALF_WIDTH, 1);
-    float dRightRailNear = sdRailSegment(p, -SIDE_RAIL_FAR_Z_END + CORNER_POCKET_R, -SIDE_RAIL_NEAR_Z_END, 
+    float dRightRailNear = sdRailSegment(p, -SIDE_RAIL_FAR_Z_END + CORNER_POCKET_R, -SIDE_RAIL_NEAR_Z_END,
                                         PLAYING_HALF_WIDTH, 1);
     float dRightRail = min(dRightRailFar, dRightRailNear);
 
@@ -492,7 +492,7 @@ float3 showScene(float3 ro, float3 rd,
                 }
                 float3x3 rotMat = qtToRMat(balls[id].quaternion);
                 float3 rotatedNormal = rotMat * n;
-                float2 uv = float2(atan2(rotatedNormal.x, rotatedNormal.z) / (2.0 * PI) + 0.5, 
+                float2 uv = float2(atan2(rotatedNormal.x, rotatedNormal.z) / (2.0 * PI) + 0.5,
                                  acos(rotatedNormal.y) / PI);
                 if (isStriped && id != 8) {
                     float stripeWidth = 0.3;
@@ -516,11 +516,11 @@ float3 showScene(float3 ro, float3 rd,
         } else if (hitType == 5.0) { // Cue Stick
             float3 eps = float3(0.0005, 0.0, 0.0);
             n = normalize(float3(
-                prRoundCylDf(cueHitPos + eps.xyy, 0.1, 0.05, CUE_LENGTH) - 
+                prRoundCylDf(cueHitPos + eps.xyy, 0.1, 0.05, CUE_LENGTH) -
                 prRoundCylDf(cueHitPos - eps.xyy, 0.1, 0.05, CUE_LENGTH),
-                prRoundCylDf(cueHitPos + eps.yxy, 0.1, 0.05, CUE_LENGTH) - 
+                prRoundCylDf(cueHitPos + eps.yxy, 0.1, 0.05, CUE_LENGTH) -
                 prRoundCylDf(cueHitPos - eps.yxy, 0.1, 0.05, CUE_LENGTH),
-                prRoundCylDf(cueHitPos + eps.yyx, 0.1, 0.05, CUE_LENGTH) - 
+                prRoundCylDf(cueHitPos + eps.yyx, 0.1, 0.05, CUE_LENGTH) -
                 prRoundCylDf(cueHitPos - eps.yyx, 0.1, 0.05, CUE_LENGTH)
             ));
             col = (cueHitPos.z < 2.2) ? float3(0.5, 0.3, 0.0) : float3(0.7, 0.7, 0.3);
@@ -539,9 +539,9 @@ float3 showScene(float3 ro, float3 rd,
 //   6) Vertex & Fragment Shaders
 // -------------------------------------
 vertex VertexOut vertexShader(uint vertexID [[vertex_id]]) {
-    constexpr float2 positions[4] = { float2(-1.0, -1.0), float2(1.0, -1.0), 
+    constexpr float2 positions[4] = { float2(-1.0, -1.0), float2(1.0, -1.0),
                                      float2(-1.0, 1.0), float2(1.0, 1.0) };
-    constexpr float2 uvs[4] = { float2(0.0, 0.0), float2(1.0, 0.0), 
+    constexpr float2 uvs[4] = { float2(0.0, 0.0), float2(1.0, 0.0),
                                float2(0.0, 1.0), float2(1.0, 1.0) };
     VertexOut out;
     out.position = float4(positions[vertexID], 0.0, 1.0);
@@ -597,7 +597,7 @@ fragment float4 behindBallFragmentShader(VertexOut in [[stage_in]],
     float3 vv = normalize(cross(ww, uu));
     const float fov = 0.8;
     float3 rd = normalize(ww + uu * uv.x * fov + vv * uv.y * fov);
-    float3 col = showScene(ro, rd, time, cueOffset, cueTipOffset, balls, 
+    float3 col = showScene(ro, rd, time, cueOffset, cueTipOffset, balls,
                           cueVisible, cueAngle, cue3DRotate, strikeAnimationOffset, cueBallWorldPos);
     return float4(col, 1.0);
 }
@@ -624,7 +624,7 @@ fragment float4 thirdBallFragmentShader(VertexOut in [[stage_in]],
     float3 vv = normalize(cross(ww, uu));
     const float fov = 0.8;
     float3 rd = normalize(ww + uu * uv.x * fov + vv * uv.y * fov);
-    float3 col = showScene(ro, rd, time, cueOffset, cueTipOffset, balls, 
+    float3 col = showScene(ro, rd, time, cueOffset, cueTipOffset, balls,
                           cueVisible, cueAngle, cue3DRotate, strikeAnimationOffset, cueBallWorldPos);
     return float4(col, 1.0);
 }
@@ -635,10 +635,8 @@ fragment float4 thirdBallFragmentShader(VertexOut in [[stage_in]],
 struct BallData {
     var position: SIMD2<Float>
     var velocity: SIMD2<Float>
-    var height: Float
-    var verticalVelocity: Float
-    var angularVelocity: SIMD3<Float>
     var quaternion: SIMD4<Float>
+    var height: Float
 }
 
 // MARK: - Utility Functions
@@ -683,7 +681,7 @@ final class PhysicsEngine {
 
     func resetRack() {
         let r = ballRadius
-        let d = r * 2
+        let d = r * 2 * 1.001 // Add a small epsilon to avoid overlap
         let rowSpacing = d * sqrt(3) / 2
         let headZ: Float = 13.6 / 2
         let footZ: Float = -13.6 / 2
@@ -692,18 +690,19 @@ final class PhysicsEngine {
         balls = []
         balls.removeAll()
         // Cue ball
-        balls.append(BallData(position: [0, headZ], velocity: .zero, height: 0.01,
-                              verticalVelocity: 0, angularVelocity: .zero, quaternion: identity))
+        balls.append(BallData(position: [0, headZ], velocity: .zero,
+                              quaternion: identity, height: 0.01))
         
-        let startZ = footZ + rowSpacing * 2
+        // Start the apex closer to the center and build towards the foot spot
+        let startZ = footZ + 4 * rowSpacing // Position of the apex (row 0)
         
         if gameMode == .eightBall {
             for row in 0..<5 {
                 for i in 0...row {
                     let x = (Float(i) - Float(row)/2) * d
-                    let z = startZ + Float(row) * rowSpacing
-                    balls.append(BallData(position: [x, z], velocity: .zero, height: 0.01,
-                                          verticalVelocity: 0, angularVelocity: .zero, quaternion: identity))
+                    let z = startZ - Float(row) * rowSpacing // Subtract rowSpacing to build towards foot spot
+                    balls.append(BallData(position: [x, z], velocity: .zero,
+                                          quaternion: identity, height: 0.01))
                 }
             }
         } else if gameMode == .nineBall {
@@ -711,9 +710,9 @@ final class PhysicsEngine {
             for row in 0..<5 {
                 for i in 0...row where count <= 9 {
                     let x = (Float(i) - Float(row)/2) * d
-                    let z = startZ + Float(row) * rowSpacing
-                    balls.append(BallData(position: [x, z], velocity: .zero, height: 0.01,
-                                          verticalVelocity: 0, angularVelocity: .zero, quaternion: identity))
+                    let z = startZ - Float(row) * rowSpacing // Subtract rowSpacing to build towards foot spot
+                    balls.append(BallData(position: [x, z], velocity: .zero,
+                                          quaternion: identity, height: 0.01))
                     count += 1
                 }
             }
@@ -721,11 +720,14 @@ final class PhysicsEngine {
         while balls.count < 16 {
             balls.append(BallData(position: [0, 0],
                                   velocity: [Float.infinity, Float.infinity],
-                                  height: 0.01,
-                                  verticalVelocity: 0,
-                                  angularVelocity: .zero,
-                                  quaternion: SIMD4<Float>(0, 0, 0, 1)))
+                                  quaternion: SIMD4<Float>(0, 0, 0, 1),
+                                  height: 0.01))
         }
+
+        // Debug: Print positions after rack setup
+//        for (index, ball) in balls.enumerated() {
+//            print("After resetRack - Ball \(index): position = \(ball.position), velocity = \(ball.velocity)")
+//        }
     }
 
     func update(delta: Float) {
@@ -739,31 +741,13 @@ final class PhysicsEngine {
                 var b = balls[i]
                 if b.velocity.x.isInfinite { continue }
                 
-                // Gravity + vertical motion
-                b.verticalVelocity -= g * dt
-                b.height += b.verticalVelocity * dt
-                if b.height <= 0.01 {
-                    b.height = 0.01
-                    b.verticalVelocity = -b.verticalVelocity * 0.5
-                    if abs(b.verticalVelocity) < 0.05 {
-                        b.verticalVelocity = 0
-                    }
-                }
-                
+                // Debug: Print positions before update
+//                print("Before update - Ball \(i): position = \(b.position), velocity = \(b.velocity)")
+
                 // Friction (very simple)
                 b.velocity *= 0.995
-                b.angularVelocity *= 0.995
                 
                 b.position += b.velocity * dt
-                
-                // Spin
-                let wMag = simd_length(b.angularVelocity)
-                if wMag > 0 {
-                    let axis = b.angularVelocity / wMag
-                    let angle = wMag * dt
-                    let dq = quaternion(from: axis, angle: angle)
-                    b.quaternion = quaternionMultiply(dq, b.quaternion)
-                }
                 
                 // Cushion bounce
                 if abs(b.position.x) > cushionEdgeX - ballRadius {
@@ -780,8 +764,6 @@ final class PhysicsEngine {
                 if checkPocket(pos: b.position, height: b.height) {
                     SoundManager.shared.playSound(name: "FourBallPoint")
                     b.velocity = [Float.infinity, Float.infinity]
-                    b.verticalVelocity = 0.0
-                    b.angularVelocity = .zero
                     b.position = .zero
                     b.height = 0.01
                 }
@@ -826,6 +808,11 @@ final class PhysicsEngine {
                     }
                 }
             }
+
+            // Debug: Print positions after update
+//            for (index, ball) in balls.enumerated() {
+//                print("After update - Ball \(index): position = \(ball.position), velocity = \(ball.velocity)")
+//            }
         }
         let moving = balls.contains { simd_length($0.velocity) > 0.05 }
         if !moving {
@@ -904,12 +891,8 @@ final class CueController {
         let power = baseSpeed * pow(powerFactor, 0.75)  // nonlinear, punchy
 
         var dir = SIMD2<Float>(sin(aimAngle), -cos(aimAngle))
-        let spinAxis = SIMD3<Float>(-tipOffset.y, 0, tipOffset.x)
-        let spin = spinAxis * (power * 2.5)
         strikeStartPosition = whiteBall.position
         whiteBall.velocity = dir * power
-        whiteBall.angularVelocity = spin
-        whiteBall.verticalVelocity = max(0, -sin(verticalAngle) * power * 0.5)
 
         cuePull = 0
         isCharging = false
@@ -1000,6 +983,11 @@ final class BilliardSimulation: ObservableObject {
         var cue3DRotate = SIMD2<Float>(cue.aimAngle, cue.verticalAngle)
         let strikePos = cue.strikeAnimating ? cue.strikeStartPosition : physics.balls[0].position
         var cueBallWorldPos = SIMD3<Float>(strikePos.x, physics.balls[0].height + 0.47, strikePos.y)
+
+        // Debug: Print positions before passing to shader
+//        for (index, ball) in physics.balls.enumerated() {
+//            print("Before render - Ball \(index): position = \(ball.position), velocity = \(ball.velocity)")
+//        }
 
         // Allocate Metal buffers
         let ballsBuffer = device.makeBuffer(bytes: physics.balls,
