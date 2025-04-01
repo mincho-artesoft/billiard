@@ -352,6 +352,90 @@ float3 getNormal(float3 p, thread float& hitType, thread float& pocketDist) {
     ));
 }
 
+float stroke(float2 uv, float2 a, float2 b, float width) {
+    float2 pa = uv - a;
+    float2 ba = b - a;
+    float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+    return smoothstep(width, 0.0, length(pa - ba * h));
+}
+
+float drawDigit(float2 uv, int digit) {
+    uv = (uv - float2(0.5)) * 2.2;
+    float d = 1.0;
+
+    if (digit == 0) {
+        d = min(stroke(uv, float2(-0.4, 0.6), float2(0.4, 0.6), 0.08),
+                min(stroke(uv, float2(0.4, 0.6), float2(0.4, -0.6), 0.08),
+                min(stroke(uv, float2(0.4, -0.6), float2(-0.4, -0.6), 0.08),
+                    stroke(uv, float2(-0.4, -0.6), float2(-0.4, 0.6), 0.08))));
+    } else if (digit == 1) {
+        d = stroke(uv, float2(0.0, 0.6), float2(0.0, -0.6), 0.08);
+    } else if (digit == 2) {
+        d = min(stroke(uv, float2(-0.4, 0.6), float2(0.4, 0.6), 0.08),
+                min(stroke(uv, float2(0.4, 0.6), float2(0.4, 0.0), 0.08),
+                min(stroke(uv, float2(0.4, 0.0), float2(-0.4, 0.0), 0.08),
+                min(stroke(uv, float2(-0.4, 0.0), float2(-0.4, -0.6), 0.08),
+                    stroke(uv, float2(-0.4, -0.6), float2(0.4, -0.6), 0.08)))));
+    } else if (digit == 3) {
+        d = min(stroke(uv, float2(-0.4, 0.6), float2(0.4, 0.6), 0.08),
+                min(stroke(uv, float2(0.4, 0.6), float2(0.4, -0.6), 0.08),
+                min(stroke(uv, float2(0.4, 0.0), float2(-0.2, 0.0), 0.08),
+                    stroke(uv, float2(0.4, -0.6), float2(-0.4, -0.6), 0.08))));
+    } else if (digit == 4) {
+        d = min(stroke(uv, float2(-0.4, 0.6), float2(-0.4, 0.0), 0.08),
+                min(stroke(uv, float2(-0.4, 0.0), float2(0.4, 0.0), 0.08),
+                    stroke(uv, float2(0.4, 0.6), float2(0.4, -0.6), 0.08)));
+    } else if (digit == 5) {
+        d = min(stroke(uv, float2(0.4, 0.6), float2(-0.4, 0.6), 0.08),
+                min(stroke(uv, float2(-0.4, 0.6), float2(-0.4, 0.0), 0.08),
+                min(stroke(uv, float2(-0.4, 0.0), float2(0.4, 0.0), 0.08),
+                min(stroke(uv, float2(0.4, 0.0), float2(0.4, -0.6), 0.08),
+                    stroke(uv, float2(0.4, -0.6), float2(-0.4, -0.6), 0.08)))));
+    } else if (digit == 6) {
+        d = min(stroke(uv, float2(0.4, 0.6), float2(-0.4, 0.6), 0.08),
+                min(stroke(uv, float2(-0.4, 0.6), float2(-0.4, -0.6), 0.08),
+                min(stroke(uv, float2(-0.4, -0.6), float2(0.4, -0.6), 0.08),
+                min(stroke(uv, float2(0.4, -0.6), float2(0.4, 0.0), 0.08),
+                    stroke(uv, float2(0.4, 0.0), float2(-0.4, 0.0), 0.08)))));
+    } else if (digit == 7) {
+        d = min(stroke(uv, float2(-0.4, 0.6), float2(0.4, 0.6), 0.08),
+                stroke(uv, float2(0.4, 0.6), float2(0.0, -0.6), 0.08));
+    } else if (digit == 8) {
+        d = min(stroke(uv, float2(-0.4, 0.6), float2(0.4, 0.6), 0.08),
+                min(stroke(uv, float2(0.4, 0.6), float2(0.4, -0.6), 0.08),
+                min(stroke(uv, float2(0.4, -0.6), float2(-0.4, -0.6), 0.08),
+                min(stroke(uv, float2(-0.4, -0.6), float2(-0.4, 0.6), 0.08),
+                    stroke(uv, float2(-0.4, 0.0), float2(0.4, 0.0), 0.08)))));
+    } else if (digit == 9) {
+        d = min(stroke(uv, float2(0.4, -0.6), float2(0.4, 0.6), 0.08),
+                min(stroke(uv, float2(0.4, 0.6), float2(-0.4, 0.6), 0.08),
+                min(stroke(uv, float2(-0.4, 0.6), float2(-0.4, 0.0), 0.08),
+                min(stroke(uv, float2(-0.4, 0.0), float2(0.4, 0.0), 0.08),
+                    stroke(uv, float2(0.4, 0.0), float2(0.4, -0.6), 0.08)))));
+    }
+
+    return d;
+}
+
+float renderBallNumber(float2 uv, int ballID) {
+    uv = (uv - float2(0.5, 0.35)) * 3.0;
+
+    int leftDigit = ballID;
+    int rightDigit = -1;
+
+    if (ballID >= 10) {
+        leftDigit = ballID / 10;
+        rightDigit = ballID % 10;
+    }
+
+    float d = drawDigit(uv + float2(rightDigit >= 0 ? -0.5 : 0.0, 0.0), leftDigit);
+    if (rightDigit >= 0) {
+        d = min(d, drawDigit(uv + float2(0.5, 0.0), rightDigit));
+    }
+
+    return d;
+}
+
 // -------------------------------------
 //   5) showScene
 // -------------------------------------
@@ -472,74 +556,7 @@ float3 showScene(float3 ro, float3 rd,
             col = float3(0.01, 0.01, 0.01);
         } else if (hitType == 4.0) { // Ball
             n = ballNormal;
-            int id = ballId;
-            if (id == 0) { col = float3(1.0); }
-            else {
-                bool isStriped = (id >= 9);
-                float3 baseColor;
-                if (id == 8) { baseColor = float3(0.0); }
-                else {
-                    float hue = 0.0;
-                    // Adjusted hues for standard billiard ball colors
-                    if (id == 1 || id == 9) hue = 60.0 / 360.0;  // Yellow
-                    if (id == 2 || id == 10) hue = 240.0 / 360.0; // Blue
-                    if (id == 3 || id == 11) hue = 0.0 / 360.0;   // Red
-                    if (id == 4 || id == 12) hue = 300.0 / 360.0; // Purple
-                    if (id == 5 || id == 13) hue = 30.0 / 360.0;  // Orange
-                    if (id == 6 || id == 14) hue = 120.0 / 360.0; // Green
-                    if (id == 7 || id == 15) hue = 330.0 / 360.0; // Maroon
-                    baseColor = hsvToRgb(float3(hue, 0.9, 1.0));
-                }
-                float3x3 rotMat = qtToRMat(balls[id].quaternion);
-                float3 rotatedNormal = rotMat * n;
-                float2 uv = float2(atan2(rotatedNormal.x, rotatedNormal.z) / (2.0 * PI) + 0.5,
-                                 acos(rotatedNormal.y) / PI);
-                if (isStriped && id != 8) {
-                    float stripeWidth = 0.3;
-                    float stripePattern = sin(uv.x * 10.0) * 0.5 + 0.5;
-                    col = mix(float3(1.0), baseColor, step(stripeWidth, uv.y) * step(uv.y, 1.0 - stripeWidth));
-                } else {
-                    col = baseColor;
-                }
-                        // Correct label positioning and sizing
-                        float2 circleCenter = float2(0.5, 0.35);
-                        float circleRadius = 0.14;
-                        float distToCenter = length(uv - circleCenter);
-
-                        if (id > 0) {
-                            // White background circle
-                            if (distToCenter < circleRadius) {
-                                col = float3(1.0);
-                            }
-
-                            // Render pseudo-digit (bigger, sharper)
-                            if (distToCenter < circleRadius * 0.95) {
-                                float dotSize = 0.035;
-                                float digitMask = smoothstep(dotSize, dotSize * 0.8, distToCenter);
-                                col = mix(col, float3(0.05), digitMask);
-                            }
-
-                            // Mirror for backside label
-                            float2 backUV = float2(1.0 - uv.x, uv.y);
-                            float2 backCenter = float2(0.5, 0.65);
-                            float backDist = length(backUV - backCenter);
-
-                            if (backDist < circleRadius) {
-                                col = float3(1.0);
-                            }
-                            if (backDist < circleRadius * 0.95) {
-                                float dotSize = 0.035;
-                                float digitMask = smoothstep(dotSize, dotSize * 0.8, backDist);
-                                col = mix(col, float3(0.05), digitMask);
-                            }
-                        }
-
-                        // Improved stripe design
-                        if (isStriped && id != 8) {
-                            float stripeBand = smoothstep(0.4, 0.5, abs(uv.y - 0.5));
-                            col = mix(baseColor, float3(1.0), stripeBand);
-                        }
-            }
+            col = float3(1.0); // Completely white ball
             float diff = max(dot(n, lightDir), 0.0);
             col *= (ambient + (1.0 - ambient) * diff);
             float3 r = reflect(rd, n);
@@ -886,7 +903,7 @@ final class CueController {
     var maxPull: Float = 2.0
     var isCharging = false
     var isShotFired = false
-    var baseSpeed: Float = 50.0  // Default base speed for cue shots
+    var baseSpeed: Float = 350.0  // Default base speed for cue shots
     var strikeStartPosition: SIMD2<Float> = .zero
     
     var strikeTimer: Float = 0.0
