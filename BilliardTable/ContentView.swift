@@ -555,8 +555,27 @@ float3 showScene(float3 ro, float3 rd,
         } else if (hitType == 3.0) { // Pocket
             col = float3(0.01, 0.01, 0.01);
         } else if (hitType == 4.0) { // Ball
-            n = ballNormal;
+            int id = ballId;
+            float3 n = ballNormal;
+            float3x3 rotMat = qtToRMat(balls[id].quaternion);
+            float3 rotatedNormal = rotMat * n;
+            float2 uv = float2(atan2(rotatedNormal.x, rotatedNormal.z) / (2.0 * PI) + 0.5,
+                               acos(rotatedNormal.y) / PI);
             col = float3(1.0); // Completely white ball
+            if (id > 0) {
+                float2 labelCenter = float2(0.5, 0.35);
+                float2 localUV = (uv - labelCenter) / 0.14;
+                float labelRadius = length(localUV);
+                float insideCircle = smoothstep(1.0, 0.8, labelRadius);
+ 
+                col = mix(col, float3(1.0), insideCircle); // White label base
+ 
+                if (labelRadius < 1.0) {
+                    float digitVal = renderBallNumber(localUV * 0.6, id);
+                    digitVal = smoothstep(0.2, 0.0, digitVal);
+                    col = mix(col, float3(0.0), digitVal); // Render digit
+                }
+            }
             float diff = max(dot(n, lightDir), 0.0);
             col *= (ambient + (1.0 - ambient) * diff);
             float3 r = reflect(rd, n);
